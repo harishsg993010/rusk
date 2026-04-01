@@ -6,6 +6,41 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
+/// Custom deserializer for Optional<String> that tolerates booleans, numbers, etc.
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(s) => Ok(Some(s)),
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Bool(false) => Ok(None),
+        serde_json::Value::Bool(true) => Ok(Some("true".to_string())),
+        serde_json::Value::Number(n) => Ok(Some(n.to_string())),
+        _ => Ok(None),
+    }
+}
+
+/// Custom deserializer for dependency maps that tolerates non-string values.
+/// Some old npm packages have `{"dep": false}` or `{"dep": null}` instead of strings.
+fn deserialize_dep_map<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(deserializer)?;
+    let mut result = HashMap::new();
+    for (key, value) in raw {
+        match value {
+            serde_json::Value::String(s) => { result.insert(key, s); }
+            serde_json::Value::Bool(_) | serde_json::Value::Null => { /* skip */ }
+            serde_json::Value::Number(n) => { result.insert(key, n.to_string()); }
+            _ => { /* skip arrays/objects */ }
+        }
+    }
+    Ok(result)
+}
+
 /// Custom deserializer for engines field that can be a map or a bare string.
 fn deserialize_engines<'de, D>(deserializer: D) -> Result<Option<HashMap<String, String>>, D::Error>
 where
@@ -19,7 +54,7 @@ where
         type Value = Option<HashMap<String, String>>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a map, a string, or null")
+            formatter.write_str("a map, a string, an array, or null")
         }
 
         fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
@@ -40,6 +75,12 @@ where
             let mut map = HashMap::new();
             map.insert("node".to_string(), v);
             Ok(Some(map))
+        }
+
+        fn visit_seq<S: de::SeqAccess<'de>>(self, mut _seq: S) -> Result<Self::Value, S::Error> {
+            // Some old packages have engines as an array — skip it
+            while _seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(None)
         }
 
         fn visit_map<M: de::MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
@@ -79,23 +120,26 @@ pub struct NpmPackument {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NpmVersionMeta {
     /// Package name.
+    #[serde(default)]
     pub name: String,
     /// Version string.
+    #[serde(default)]
     pub version: String,
     /// Description of this version.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub description: Option<String>,
     /// Production dependencies: name => semver range.
-    #[serde(default)]
+    /// Some old packages have non-string values (boolean false), so we tolerate that.
+    #[serde(default, deserialize_with = "deserialize_dep_map")]
     pub dependencies: HashMap<String, String>,
     /// Development dependencies.
-    #[serde(rename = "devDependencies", default)]
+    #[serde(rename = "devDependencies", default, deserialize_with = "deserialize_dep_map")]
     pub dev_dependencies: HashMap<String, String>,
     /// Peer dependencies.
-    #[serde(rename = "peerDependencies", default)]
+    #[serde(rename = "peerDependencies", default, deserialize_with = "deserialize_dep_map")]
     pub peer_dependencies: HashMap<String, String>,
     /// Optional dependencies.
-    #[serde(rename = "optionalDependencies", default)]
+    #[serde(rename = "optionalDependencies", default, deserialize_with = "deserialize_dep_map")]
     pub optional_dependencies: HashMap<String, String>,
     /// Peer dependency metadata (which peers are optional).
     #[serde(rename = "peerDependenciesMeta", default)]
@@ -106,12 +150,15 @@ pub struct NpmVersionMeta {
     /// Node engines constraint (can be a map or sometimes a bare string in old packages).
     #[serde(default, deserialize_with = "deserialize_engines")]
     pub engines: Option<HashMap<String, String>>,
-    /// Whether this version is deprecated.
-    #[serde(default)]
+    /// Whether this version is deprecated (can be string message or boolean false).
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub deprecated: Option<String>,
     /// Has install scripts.
     #[serde(rename = "hasInstallScript", default)]
     pub has_install_script: Option<bool>,
+    /// Catch-all for unknown fields that npm adds over time.
+    #[serde(flatten)]
+    pub _extra: HashMap<String, serde_json::Value>,
 }
 
 /// Peer dependency metadata entry.

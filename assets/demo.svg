@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="750" height="580" font-family="Monaco,Consolas,'Courier New',monospace" font-size="14">
+  <rect width="750" height="580" rx="8" fill="#1e1e2e"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f56"/>
+  <circle cx="38" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="56" cy="18" r="6" fill="#27c93f"/>
+  <text fill="#cdd6f4" xml:space="preserve">
+    <tspan x="15" y="55" fill="#89b4fa">$</tspan><tspan fill="#cdd6f4"> rusk init --ecosystem js --name my-app</tspan>
+    <tspan x="15" y="75" fill="#a6adc8">  created rusk.toml</tspan>
+    <tspan x="15" y="93" fill="#a6adc8">  created .rusk</tspan>
+    <tspan x="15" y="111" fill="#a6e3a1">initialized rusk project 'my-app'</tspan>
+    <tspan x="15" y="139" fill="#89b4fa">$</tspan><tspan fill="#cdd6f4"> rusk install</tspan>
+    <tspan x="15" y="157" fill="#a6e3a1">Installed 3 packages (3 downloaded) in 0.7s</tspan>
+    <tspan x="15" y="175" fill="#a6adc8">  Materialized JS packages to node_modules/</tspan>
+    <tspan x="15" y="203" fill="#89b4fa">$</tspan><tspan fill="#cdd6f4"> rusk verify --detailed</tspan>
+    <tspan x="15" y="221" fill="#a6e3a1">  OK  escape-html@1.0.3 (sha256:7b75c105...)</tspan>
+    <tspan x="15" y="239" fill="#a6e3a1">  OK  is-number@7.0.0 (sha256:f6616e15...)</tspan>
+    <tspan x="15" y="257" fill="#a6e3a1">  OK  ms@2.1.3 (sha256:a101155c...)</tspan>
+    <tspan x="15" y="275" fill="#cdd6f4">Verified 3/3 packages: 3 passed, 0 failed</tspan>
+    <tspan x="15" y="293" fill="#a6e3a1">verification complete - all packages OK</tspan>
+    <tspan x="15" y="321" fill="#89b4fa">$</tspan><tspan fill="#cdd6f4"> rusk explain ms</tspan>
+    <tspan x="15" y="339" fill="#cdd6f4">Package: ms@2.1.3</tspan>
+    <tspan x="15" y="357" fill="#a6adc8">Digest: sha256:a101155c3cbdfb1e...</tspan>
+    <tspan x="15" y="375" fill="#a6adc8">Policy evaluation:</tspan>
+    <tspan x="15" y="393" fill="#a6adc8">  - Signatures not required by policy</tspan>
+    <tspan x="15" y="411" fill="#a6e3a1">  + Package has valid digest</tspan>
+    <tspan x="15" y="429" fill="#a6e3a1">Verdict: ALLOW - package is trusted</tspan>
+    <tspan x="15" y="457" fill="#89b4fa">$</tspan><tspan fill="#cdd6f4"> node -e "console.log(require('./node_modules/ms')('2h'))"</tspan>
+    <tspan x="15" y="475" fill="#f9e2af">7200000</tspan>
+    <tspan x="15" y="503" fill="#89b4fa">$</tspan><tspan fill="#a6adc8"> _</tspan>
+  </text>
+</svg>
