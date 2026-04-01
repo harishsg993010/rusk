@@ -204,72 +204,82 @@ Full evaluation trace:
 
 ## Real-world attack: how rusk would have stopped the litellm compromise
 
-In March 2025, the popular Python package `litellm` (used by thousands of companies to route LLM API calls) was compromised. An attacker gained access to the maintainer's PyPI credentials and published version 4.97.2 with a malicious payload baked into the source code. The payload ran on import and exfiltrated environment variables — API keys, database credentials, cloud tokens — to an attacker-controlled server.
+On March 24, 2026, a threat actor called TeamPCP published `litellm` versions 1.82.7 and 1.82.8 to PyPI. They got in by first compromising Trivy (an open-source security scanner) through a poisoned GitHub Action, which gave them access to LiteLLM's CI/CD pipeline and ultimately the maintainer's PyPI credentials.
 
-Every pip and uv user who ran `pip install --upgrade litellm` or had an unpinned dependency got owned silently. The malicious version was a valid release on PyPI, signed with the real maintainer's credentials, and looked like a normal point release. Nothing in the standard Python toolchain flagged it.
+The malicious release contained a file called `litellm_init.pth` — a 34KB double-base64-encoded payload. The `.pth` file format is special in Python: it executes automatically on every Python process startup when litellm is installed, no `import litellm` required. The payload stole SSL and SSH keys, cloud provider credentials, Kubernetes configs, git credentials, API keys, shell history, and crypto wallets. It also attempted lateral movement across Kubernetes clusters and installed a persistent systemd backdoor.
+
+The package has about 480 million downloads. The malicious versions were live for roughly two hours before PyPI quarantined them.
+
+Every pip and uv user who ran `pip install --upgrade litellm` or had an unpinned dependency got hit silently. No version tag existed on GitHub — the package was uploaded directly to PyPI, bypassing the normal release process. Nothing in the standard Python toolchain flagged it.
 
 Here's what would have happened with rusk.
 
 **Layer 1 — Lockfile blocks the unknown version.**
 
-If you had `litellm` in your `rusk.lock` at version 4.97.1, running `rusk install` does nothing. rusk doesn't upgrade unless you explicitly run `rusk update`. The lockfile pins the exact SHA-256 digest of the wheel you already verified. The malicious 4.97.2 never enters your project.
+If you had `litellm` in your `rusk.lock` at version 1.82.6, running `rusk install` does nothing. rusk doesn't upgrade unless you explicitly run `rusk update`. The lockfile pins the exact SHA-256 digest of the wheel you already verified. The malicious 1.82.8 never enters your project.
 
 ```
 $ rusk install
 Already up to date. (0.17s)
 ```
 
-The attacker published a new version, but rusk didn't care. Your lockfile said 4.97.1, that's what you got.
+The attacker published a new version, but rusk didn't care. Your lockfile said 1.82.6, that's what you got.
 
 **Layer 2 — Update triggers digest change detection.**
 
-If you did run `rusk update litellm`, rusk would resolve 4.97.2, download it, and compute its SHA-256. The lockfile diff would show:
+If you did run `rusk update litellm`, rusk would resolve 1.82.8, download it, and compute its SHA-256. The lockfile diff would show:
 
 ```
 $ rusk update litellm
-  litellm: 4.97.1 -> 4.97.2
+  litellm: 1.82.6 -> 1.82.8
   digest changed: sha256:ab12... -> sha256:cd34...
 ```
 
-That digest change is visible in your `rusk.lock` diff in version control. A code review would see the digest changed — and could ask "why did 170KB of new code show up in a patch release?"
+That digest change is visible in your `rusk.lock` diff in version control. A code review would see the digest changed — and could ask "why did a new `.pth` file show up in a patch release?"
 
-**Layer 3 — Signature policy catches credential theft.**
+**Layer 3 — Provenance flags the anomaly.**
 
-With `require_signatures = true`, rusk checks whether the package was signed by an expected identity. If the attacker used stolen credentials but a different signing key or no signing at all:
+This is the big one. The malicious version was uploaded directly to PyPI — no corresponding tag or release existed on the litellm GitHub repository. If your policy requires provenance (`require_provenance = true`), rusk verifies that the artifact was built by a known CI system from a known repository. A direct PyPI upload has no provenance attestation at all:
+
+```
+$ rusk explain litellm
+Policy evaluation:
+  ! Provenance: missing (no build attestation found)
+  ! No matching GitHub release tag for version 1.82.8
+Verdict: DENY
+```
+
+This is exactly the signal that would have caught the attack. Legitimate litellm releases go through GitHub Actions. This one didn't.
+
+**Layer 4 — Signature policy catches the unauthorized publisher.**
+
+With `require_signatures = true`, rusk checks whether the package was signed by an expected identity. The attacker used stolen credentials obtained through the compromised Trivy supply chain, but if the signing key was different from the expected maintainer identity:
 
 ```
 $ rusk audit --strict
-[WARN] litellm@4.97.2: package is not signed
+[WARN] litellm@1.82.8: package is not signed
 error: audit found 1 issue
 ```
 
 CI fails. The package never reaches production.
 
-**Layer 4 — Provenance flags the anomaly.**
+**Layer 5 — The .pth attack vector.**
 
-If your policy requires provenance (`require_provenance = true`), rusk verifies that the artifact was built by a known CI system from a known repository. The attacker published from a local machine or a different workflow. The provenance attestation either doesn't exist or doesn't match:
+The litellm attack was particularly nasty because it used a `.pth` file that runs on every Python process startup — not just when you import litellm. This means the malware activates even if your code never touches litellm directly.
 
-```
-$ rusk explain litellm
-Policy evaluation:
-  ! Provenance: builder identity changed (was github-actions, now unknown)
-  ! Provenance: source repo mismatch
-Verdict: DENY
-```
+rusk's sandboxed build system blocks arbitrary code execution during install. But `.pth` files execute at Python runtime, not install time. This is a Python-level vulnerability that no package manager can fully prevent after installation.
 
-**Layer 5 — Install scripts are blocked by default.**
-
-Even if the malicious version somehow made it past all the above, rusk doesn't execute arbitrary code on install. The litellm payload ran on `import`, not on install, so this specific attack would need the code to actually be imported by your application. But for attacks that use `setup.py` or `postinstall` hooks, rusk blocks them entirely unless you explicitly allow them in your trust policy.
+What rusk does prevent: the malicious version from ever being installed in the first place. Layers 1 through 4 all independently block it before it reaches your `site-packages`.
 
 **What actually stops this class of attack:**
 
-The litellm compromise wasn't sophisticated. It was a stolen credential and a malicious publish. That's the most common real-world supply-chain attack pattern. rusk stops it at multiple layers:
+The litellm compromise was a cascading supply-chain attack: Trivy compromised first, then used to steal LiteLLM's CI credentials, then used to publish a malicious version to PyPI. rusk stops it at multiple layers:
 
-1. Lockfile pins prevent silent upgrades
-2. Digest changes are visible in version control
-3. Signature policy catches unauthorized publishers
-4. Provenance verification catches unexpected build origins
-5. Install script sandboxing limits blast radius
+1. Lockfile pins prevent silent upgrades (the attacker published 1.82.8, but your lockfile says 1.82.6)
+2. Digest changes are visible in version control (code review catches new `.pth` files)
+3. Provenance verification detects the missing CI attestation (no GitHub Actions build, no release tag)
+4. Signature policy catches unauthorized publishers
+5. Build sandbox limits blast radius for install-time code execution
 
 No single layer is perfect. But stacking five layers means the attacker has to beat all of them. With pip, they had to beat zero.
 
