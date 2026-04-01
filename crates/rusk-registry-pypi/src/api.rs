@@ -2,7 +2,7 @@
 //!
 //! Implements the `RegistryClient` trait for the PyPI JSON API.
 
-use crate::metadata::{PypiFile, PypiPackageIndex};
+use crate::metadata::{PypiFile, PypiPackageIndex, PypiProvenance};
 use async_trait::async_trait;
 use rusk_core::{Ecosystem, PackageId, RegistryUrl, Sha256Digest, Version};
 use rusk_registry::{
@@ -77,6 +77,55 @@ impl PypiRegistryClient {
             .json::<PypiPackageIndex>()
             .await
             .map_err(|e| RegistryError::InvalidResponse(e.to_string()))
+    }
+
+    /// Fetch PEP 740 digital attestation provenance for a specific file.
+    ///
+    /// Uses the PyPI Integrity API:
+    /// `https://pypi.org/integrity/{package}/{version}/{filename}/provenance`
+    ///
+    /// Returns `Ok(None)` if the endpoint returns 404 (no attestations
+    /// published for this file).
+    #[instrument(skip(self), fields(registry = %self.registry_url))]
+    pub async fn fetch_provenance(
+        &self,
+        package_name: &str,
+        version: &str,
+        filename: &str,
+    ) -> Result<Option<PypiProvenance>, RegistryError> {
+        let url = format!(
+            "https://pypi.org/integrity/{}/{}/{}/provenance",
+            package_name, version, filename,
+        );
+        debug!(url = %url, "fetching PyPI provenance attestation");
+
+        let response = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| RegistryError::Network(e.to_string()))?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            debug!(package = %package_name, version = %version, "no provenance attestation available (404)");
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(RegistryError::InvalidResponse(format!(
+                "HTTP {} from {}",
+                status, url
+            )));
+        }
+
+        let provenance: PypiProvenance = response
+            .json()
+            .await
+            .map_err(|e| RegistryError::InvalidResponse(format!(
+                "failed to parse provenance response: {e}"
+            )))?;
+
+        Ok(Some(provenance))
     }
 
     /// Convert a list of PyPI files into unified ArtifactInfo entries.

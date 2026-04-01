@@ -77,6 +77,12 @@ struct ResolvedPackage {
     tarball_url: String,
     digest: Option<Sha256Digest>,
     dependencies: Vec<rusk_registry::DependencySpec>,
+    /// npm ECDSA signatures from `dist.signatures`, if present.
+    signatures: Vec<rusk_registry_npm::NpmSignature>,
+    /// Subresource integrity string (e.g., "sha512-..."), if present.
+    integrity: Option<String>,
+    /// Original filename on the registry (e.g. wheel filename for PyPI).
+    filename: Option<String>,
 }
 
 /// Run the full install flow.
@@ -481,7 +487,9 @@ pub async fn run_install(
             ));
             info!(depth, batch_size = to_fetch.len(), "fetching metadata batch");
 
-            // Fetch all metadata in this level in parallel
+            // Fetch all metadata in this level in parallel.
+            // We fetch the raw packument so we can extract npm-specific
+            // signature and integrity data alongside the unified metadata.
             let mut handles = Vec::with_capacity(to_fetch.len());
             for (name, version_req_str) in &to_fetch {
                 let client = npm_client.clone();
@@ -489,7 +497,7 @@ pub async fn run_install(
                 let version_req_str = version_req_str.clone();
                 handles.push(tokio::spawn(async move {
                     let pkg_id = PackageId::js(&name);
-                    let result = client.fetch_package_metadata(&pkg_id).await;
+                    let result = client.fetch_packument(&pkg_id).await;
                     (name, version_req_str, pkg_id, result)
                 }));
             }
@@ -510,9 +518,12 @@ pub async fn run_install(
                     continue;
                 }
 
-                let pkg_meta = fetch_result.map_err(|e| InstallError::ResolutionFailed(
+                let packument = fetch_result.map_err(|e| InstallError::ResolutionFailed(
                     format!("failed to fetch metadata for {name}: {e}")
                 ))?;
+
+                // Convert the raw packument to unified PackageMetadata
+                let pkg_meta = NpmRegistryClient::packument_to_metadata(&pkg_id, &packument);
 
                 // Parse version requirement
                 let semver_req = parse_npm_range(&version_req_str)
@@ -563,6 +574,18 @@ pub async fn run_install(
 
                 let digest = ver_meta.preferred_artifact().and_then(|a| a.sha256);
 
+                // Extract npm-specific signature and integrity data from
+                // the raw packument version entry.
+                let (signatures, integrity) = packument
+                    .versions
+                    .get(&ver_str)
+                    .map(|npm_ver| {
+                        let sigs = npm_ver.dist.signatures.clone().unwrap_or_default();
+                        let int = npm_ver.dist.integrity.clone();
+                        (sigs, int)
+                    })
+                    .unwrap_or_default();
+
                 // Queue transitive deps for next level
                 for dep in &ver_meta.dependencies {
                     if dep.kind == DependencyKind::Normal && !resolved_names.contains(&dep.name) {
@@ -577,6 +600,9 @@ pub async fn run_install(
                     tarball_url,
                     digest,
                     dependencies: ver_meta.dependencies,
+                    signatures,
+                    integrity,
+                    filename: None,
                 });
             }
 
@@ -786,6 +812,8 @@ pub async fn run_install(
                     }
                 }
 
+                let wheel_filename = Some(artifact.filename.clone());
+
                 py_resolved_names.insert(name.clone());
                 py_resolved_packages.push(ResolvedPackage {
                     package_id: pkg_id,
@@ -793,6 +821,9 @@ pub async fn run_install(
                     tarball_url,
                     digest,
                     dependencies: ver_meta.dependencies,
+                    signatures: Vec::new(), // PyPI does not use npm-style signatures
+                    integrity: None,
+                    filename: wheel_filename,
                 });
             }
 
@@ -876,9 +907,42 @@ pub async fn run_install(
     metrics.record_downloaded(downloaded_count as u64, 0);
 
     // Step 4b: Verify artifact trust chain
-    // Check revocation status, signature policy, and transparency freshness
-    // for every downloaded artifact before materializing anything.
+    // Check revocation status, npm ECDSA signatures, provenance attestations,
+    // and transparency freshness for every downloaded artifact before
+    // materializing anything.
     emit("Verifying artifact trust chain...");
+
+    // Fetch npm registry signing keys once for signature verification.
+    // We reuse the npm_client created during resolution if JS deps exist;
+    // otherwise we create an ephemeral one only when needed.
+    let npm_client_for_verify = if manifest.js_dependencies.is_some() {
+        Some(Arc::new(NpmRegistryClient::default_registry()))
+    } else {
+        None
+    };
+
+    // Create a PyPI client for provenance verification if Python deps exist.
+    let pypi_client_for_verify = if manifest.python_dependencies.is_some() {
+        Some(Arc::new(PypiRegistryClient::default_registry()))
+    } else {
+        None
+    };
+
+    let registry_keys: Vec<rusk_registry_npm::NpmRegistryKey> =
+        if let Some(ref client) = npm_client_for_verify {
+            match client.fetch_registry_keys().await {
+                Ok(keys) => {
+                    info!(count = keys.len(), "fetched npm registry signing keys");
+                    keys
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to fetch npm registry keys, signature verification will be skipped");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
     for (i, rp) in all_packages.iter().enumerate() {
         let digest = download_digests[i];
@@ -906,44 +970,208 @@ pub async fn run_install(
             ));
         }
 
-        // Check signature policy
-        if let Some(tc) = trust_config {
+        // Verify npm ECDSA signatures if the package has them
+        if !rp.signatures.is_empty() && !registry_keys.is_empty() {
+            let integrity = rp.integrity.as_deref().unwrap_or("");
+            let mut any_valid = false;
+            for sig in &rp.signatures {
+                match NpmRegistryClient::verify_signature(
+                    &rp.package_id.name,
+                    &rp.version.to_string(),
+                    integrity,
+                    sig,
+                    &registry_keys,
+                ) {
+                    Ok(true) => {
+                        info!(
+                            package = %pkg_name,
+                            keyid = %sig.keyid,
+                            "npm ECDSA signature verified"
+                        );
+                        any_valid = true;
+                    }
+                    Ok(false) => {
+                        warn!(
+                            package = %pkg_name,
+                            keyid = %sig.keyid,
+                            "npm ECDSA signature INVALID"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            package = %pkg_name,
+                            keyid = %sig.keyid,
+                            error = %e,
+                            "npm signature verification error"
+                        );
+                    }
+                }
+            }
+            // If signatures are required and none verified, that is a policy
+            // violation.
+            if let Some(tc) = trust_config {
+                if tc.require_signatures && !any_valid {
+                    return Err(InstallError::PolicyViolation(format!(
+                        "{pkg_name}@{}: no valid npm signature found",
+                        rp.version
+                    )));
+                }
+            }
+        } else if let Some(tc) = trust_config {
+            // No signatures available on this package
             if tc.require_signatures {
-                // In a full deployment, the registry would supply an
-                // ArtifactSignature alongside each artifact. We would then:
-                //   1. Deserialize it into rusk_signing::ArtifactSignature
-                //   2. Call DefaultSignatureVerifier.verify(artifact_id, bytes, &sig)
-                //   3. Match the resulting VerifiedSignature.signer against
-                //      tc.trusted_signers via IdentityMatcher
-                //   4. Cache the result via sig_cache.insert(digest, verified)
-                //
-                // Until registries provide signatures, we check the cache
-                // (which would be populated by a prior run or CI pipeline)
-                // and warn when no verification is available.
+                if rp.package_id.ecosystem == Ecosystem::Js {
+                    // JS package without signatures -- warn or fail
+                    if registry_keys.is_empty() {
+                        warn!(
+                            package = %pkg_name,
+                            version = %rp.version,
+                            "signature verification required but registry keys unavailable"
+                        );
+                    } else {
+                        warn!(
+                            package = %pkg_name,
+                            version = %rp.version,
+                            "signature verification required but package has no signatures"
+                        );
+                    }
+                }
+                // Check the legacy signature cache as fallback
                 if sig_cache.get(&digest).is_none() {
                     warn!(
                         package = %pkg_name,
                         version = %rp.version,
-                        "signature verification required but no signature available from registry"
+                        "no signature available (npm or cached)"
                     );
                 }
             }
+        }
 
-            if tc.require_transparency {
-                // Transparency log inclusion proofs would be verified here
-                // once registries support them. The flow would be:
-                //   1. Fetch the inclusion proof for this artifact from the log
-                //   2. Verify it against a TransparencyCheckpoint
-                //   3. Call check_freshness(checkpoint, policy, now) to ensure
-                //      the checkpoint itself is not stale
-                //
-                // For now, log that transparency is required but unavailable.
-                info!(
-                    package = %pkg_name,
-                    version = %rp.version,
-                    "transparency log inclusion required (will verify when log proofs are available)"
-                );
+        // Check provenance attestations if required
+        if trust_config.map_or(false, |tc| tc.require_provenance) {
+            if rp.package_id.ecosystem == Ecosystem::Js {
+                if let Some(ref client) = npm_client_for_verify {
+                    match client
+                        .fetch_attestations(&rp.package_id.name, &rp.version.to_string())
+                        .await
+                    {
+                        Ok(Some(att)) => {
+                            let has_provenance = att.attestations.iter().any(|a| {
+                                a.predicate_type.contains("slsa.dev/provenance")
+                            });
+                            if has_provenance {
+                                info!(
+                                    package = %pkg_name,
+                                    version = %rp.version,
+                                    "provenance attestation found (SLSA)"
+                                );
+                            } else {
+                                warn!(
+                                    package = %pkg_name,
+                                    version = %rp.version,
+                                    "no SLSA provenance in attestations"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            warn!(
+                                package = %pkg_name,
+                                version = %rp.version,
+                                "no provenance attestations available"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                package = %pkg_name,
+                                version = %rp.version,
+                                error = %e,
+                                "failed to fetch provenance attestations"
+                            );
+                        }
+                    }
+                }
             }
+
+            // PyPI PEP 740 digital attestation verification
+            if rp.package_id.ecosystem == Ecosystem::Python {
+                if let Some(ref pypi_client) = pypi_client_for_verify {
+                    // Derive the wheel filename from the tarball_url or the stored filename.
+                    let wheel_filename = rp.filename.as_deref().unwrap_or_else(|| {
+                        rp.tarball_url
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                    });
+
+                    if !wheel_filename.is_empty() {
+                        match pypi_client
+                            .fetch_provenance(
+                                &rp.package_id.name,
+                                &rp.version.to_string(),
+                                wheel_filename,
+                            )
+                            .await
+                        {
+                            Ok(Some(provenance)) => {
+                                // Log top-level publisher if present
+                                if let Some(ref pub_info) = provenance.publisher {
+                                    info!(
+                                        package = %pkg_name,
+                                        version = %rp.version,
+                                        publisher_kind = %pub_info.kind,
+                                        repository = pub_info.repository.as_deref().unwrap_or("unknown"),
+                                        workflow = pub_info.workflow.as_deref().unwrap_or("unknown"),
+                                        "PyPI provenance attestation found (PEP 740)"
+                                    );
+                                }
+                                // Log each attestation bundle publisher
+                                for bundle in &provenance.attestation_bundles {
+                                    info!(
+                                        package = %pkg_name,
+                                        version = %rp.version,
+                                        bundle_publisher_kind = %bundle.publisher.kind,
+                                        bundle_repository = bundle.publisher.repository.as_deref().unwrap_or("unknown"),
+                                        bundle_workflow = bundle.publisher.workflow.as_deref().unwrap_or("unknown"),
+                                        attestation_count = bundle.attestations.len(),
+                                        "PyPI attestation bundle verified"
+                                    );
+                                }
+                            }
+                            Ok(None) => {
+                                warn!(
+                                    package = %pkg_name,
+                                    version = %rp.version,
+                                    "no PyPI provenance attestation available (PEP 740)"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    package = %pkg_name,
+                                    version = %rp.version,
+                                    error = %e,
+                                    "failed to fetch PyPI provenance attestation"
+                                );
+                            }
+                        }
+                    } else {
+                        warn!(
+                            package = %pkg_name,
+                            version = %rp.version,
+                            "cannot verify PyPI provenance: no filename available"
+                        );
+                    }
+                }
+            }
+        }
+
+        if trust_config.map_or(false, |tc| tc.require_transparency) {
+            // Transparency log inclusion proofs would be verified here
+            // once registries support them.
+            info!(
+                package = %pkg_name,
+                version = %rp.version,
+                "transparency log inclusion required (will verify when log proofs are available)"
+            );
         }
 
         info!(

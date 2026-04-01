@@ -15,4 +15,7 @@ pub mod metadata;
 pub mod tarball;
 
 pub use api::NpmRegistryClient;
-pub use metadata::{NpmDist, NpmPackument, NpmVersionMeta};
+pub use metadata::{
+    NpmAttestation, NpmAttestations, NpmDist, NpmKeysResponse, NpmPackument, NpmRegistryKey,
+    NpmSignature, NpmVersionMeta,
+};

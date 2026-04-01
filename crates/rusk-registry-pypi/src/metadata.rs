@@ -138,6 +138,44 @@ impl PypiFile {
     }
 }
 
+/// PyPI provenance object returned by the Integrity API (PEP 740).
+///
+/// Endpoint: `https://pypi.org/integrity/{project}/{version}/{filename}/provenance`
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PypiProvenance {
+    /// Top-level publisher identity, if present.
+    pub publisher: Option<PypiPublisher>,
+    /// Attestation bundles, each bound to a Trusted Publisher identity.
+    #[serde(default)]
+    pub attestation_bundles: Vec<PypiAttestationBundle>,
+}
+
+/// A Trusted Publisher identity from PyPI (e.g. a GitHub Actions workflow).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PypiPublisher {
+    /// Publisher kind, e.g. "GitHub".
+    pub kind: String,
+    /// Source repository (e.g. "psf/requests").
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// Workflow file that published the artifact.
+    #[serde(default)]
+    pub workflow: Option<String>,
+    /// Deployment environment name.
+    #[serde(default)]
+    pub environment: Option<String>,
+}
+
+/// A bundle of attestations from a single publisher.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PypiAttestationBundle {
+    /// The publisher that produced these attestations.
+    pub publisher: PypiPublisher,
+    /// Raw attestation objects (Sigstore bundles).
+    #[serde(default)]
+    pub attestations: Vec<serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

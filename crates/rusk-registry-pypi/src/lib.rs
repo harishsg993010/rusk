@@ -17,5 +17,7 @@ pub mod sdist;
 pub mod wheel;
 
 pub use api::PypiRegistryClient;
-pub use metadata::{PypiFile, PypiPackageIndex};
+pub use metadata::{
+    PypiAttestationBundle, PypiFile, PypiPackageIndex, PypiProvenance, PypiPublisher,
+};
 pub use wheel::WheelTags;

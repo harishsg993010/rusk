@@ -198,6 +198,44 @@ pub struct NpmSignature {
     pub sig: String,
 }
 
+/// Response from the npm registry keys endpoint (`/-/npm/v1/keys`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NpmKeysResponse {
+    pub keys: Vec<NpmRegistryKey>,
+}
+
+/// A public signing key published by the npm registry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NpmRegistryKey {
+    /// Key identifier (e.g. "SHA256:...").
+    pub keyid: String,
+    /// Key type (e.g. "ecdsa-sha2-nistp256").
+    pub keytype: String,
+    /// Signature scheme (e.g. "ecdsa-sha2-nistp256").
+    pub scheme: String,
+    /// Base64-encoded public key (DER / SPKI).
+    pub key: String,
+    /// Optional expiration date (ISO 8601 or null).
+    pub expires: Option<String>,
+}
+
+/// Response from the npm attestations endpoint.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NpmAttestations {
+    pub attestations: Vec<NpmAttestation>,
+}
+
+/// A single attestation entry (Sigstore bundle).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NpmAttestation {
+    /// Predicate type URI (e.g. "https://slsa.dev/provenance/v1").
+    #[serde(rename = "predicateType")]
+    pub predicate_type: String,
+    /// Sigstore bundle (opaque JSON).
+    #[serde(default)]
+    pub bundle: serde_json::Value,
+}
+
 impl NpmPackument {
     /// Get the version string for a given dist-tag (e.g., "latest").
     pub fn dist_tag_version(&self, tag: &str) -> Option<&str> {

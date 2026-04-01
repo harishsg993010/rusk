@@ -2,9 +2,14 @@
 //!
 //! Implements the `RegistryClient` trait for the npm registry protocol.
 
-use crate::metadata::{NpmPackument, NpmVersionMeta};
+use crate::metadata::{
+    NpmAttestations, NpmKeysResponse, NpmPackument, NpmRegistryKey, NpmSignature, NpmVersionMeta,
+};
 use crate::tarball;
 use async_trait::async_trait;
+use base64::Engine as _;
+use p256::ecdsa::signature::Verifier;
+use p256::ecdsa::{Signature as P256Signature, VerifyingKey};
 use rusk_core::{Ecosystem, PackageId, RegistryUrl, Sha256Digest, Version};
 use rusk_registry::{
     ArtifactInfo, ArtifactType, DependencyKind, DependencySpec, PackageMetadata, RegistryClient,
@@ -12,8 +17,9 @@ use rusk_registry::{
 };
 use rusk_tuf::SignedMetadata;
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 /// npm registry client implementing the `RegistryClient` trait.
 pub struct NpmRegistryClient {
@@ -119,6 +125,203 @@ impl NpmRegistryClient {
                     encoded_name, e, e.column()
                 ))
             })
+    }
+
+    /// Fetch the public signing keys published by the npm registry.
+    ///
+    /// These keys are used to verify ECDSA signatures on package tarballs.
+    /// Endpoint: `{registry_url}/-/npm/v1/keys`
+    #[instrument(skip(self), fields(registry = %self.registry_url))]
+    pub async fn fetch_registry_keys(&self) -> Result<Vec<NpmRegistryKey>, RegistryError> {
+        let url = format!("{}/-/npm/v1/keys", self.registry_url.as_url());
+        debug!(url = %url, "fetching npm registry keys");
+
+        let response = self
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| RegistryError::Network(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(RegistryError::InvalidResponse(format!(
+                "HTTP {} from {}",
+                status, url
+            )));
+        }
+
+        let keys_response: NpmKeysResponse = response
+            .json()
+            .await
+            .map_err(|e| RegistryError::InvalidResponse(format!("error decoding keys: {e}")))?;
+
+        debug!(count = keys_response.keys.len(), "fetched npm registry keys");
+        Ok(keys_response.keys)
+    }
+
+    /// Verify an npm ECDSA-P256 signature for a package version.
+    ///
+    /// The signed message is `{package_name}@{version}:{integrity}`.
+    /// The signature is verified against the registry key matching `signature.keyid`.
+    pub fn verify_signature(
+        package_name: &str,
+        version: &str,
+        integrity: &str,
+        signature: &NpmSignature,
+        registry_keys: &[NpmRegistryKey],
+    ) -> Result<bool, String> {
+        // 1. Find the matching key
+        let key = registry_keys
+            .iter()
+            .find(|k| k.keyid == signature.keyid)
+            .ok_or_else(|| {
+                format!(
+                    "no registry key found matching keyid {}",
+                    signature.keyid
+                )
+            })?;
+
+        // 2. Verify the key is an ECDSA P-256 key
+        if key.keytype != "ecdsa-sha2-nistp256" {
+            return Err(format!("unsupported key type: {}", key.keytype));
+        }
+
+        // 3. Construct the signed message: "{name}@{version}:{integrity}"
+        let message = format!("{package_name}@{version}:{integrity}");
+
+        // 4. Base64-decode the public key (SPKI / DER format)
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let pub_key_bytes = b64
+            .decode(&key.key)
+            .map_err(|e| format!("failed to base64-decode public key: {e}"))?;
+
+        // 5. Parse the public key as a P-256 verifying key (SPKI DER)
+        let verifying_key = VerifyingKey::from_sec1_bytes(&pub_key_bytes)
+            .or_else(|_| {
+                // Try parsing as SPKI DER
+                use p256::pkcs8::DecodePublicKey;
+                VerifyingKey::from_public_key_der(&pub_key_bytes)
+            })
+            .map_err(|e| format!("failed to parse public key: {e}"))?;
+
+        // 6. Decode the signature (base64)
+        let sig_bytes = b64
+            .decode(&signature.sig)
+            .or_else(|_| {
+                // Fall back to hex decoding
+                hex::decode(&signature.sig)
+                    .map_err(|e| base64::DecodeError::InvalidByte(0, e.to_string().as_bytes()[0]))
+            })
+            .map_err(|e| format!("failed to decode signature: {e}"))?;
+
+        // 7. Parse as a DER-encoded ECDSA signature
+        let ecdsa_sig = P256Signature::from_der(&sig_bytes)
+            .or_else(|_| P256Signature::from_slice(&sig_bytes))
+            .map_err(|e| format!("failed to parse ECDSA signature: {e}"))?;
+
+        // 8. Verify: ECDSA-P256 signs over the raw message bytes (not hashed)
+        //    npm uses the raw message for verification
+        match verifying_key.verify(message.as_bytes(), &ecdsa_sig) {
+            Ok(()) => Ok(true),
+            Err(_) => {
+                // Also try with SHA-256 hash of the message
+                let mut hasher = Sha256::new();
+                hasher.update(message.as_bytes());
+                let hash = hasher.finalize();
+                let hash_sig = P256Signature::from_der(&sig_bytes)
+                    .or_else(|_| P256Signature::from_slice(&sig_bytes))
+                    .map_err(|e| format!("failed to parse ECDSA signature: {e}"))?;
+                match verifying_key.verify(&hash, &hash_sig) {
+                    Ok(()) => Ok(true),
+                    Err(_) => Ok(false),
+                }
+            }
+        }
+    }
+
+    /// Fetch provenance attestations for a specific package version.
+    ///
+    /// Endpoint: `{registry_url}/-/npm/v1/attestations/{name}@{version}`
+    #[instrument(skip(self), fields(registry = %self.registry_url))]
+    pub async fn fetch_attestations(
+        &self,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Option<NpmAttestations>, RegistryError> {
+        // URL-encode scoped package names for the attestation endpoint
+        let encoded_name = if package_name.starts_with('@') {
+            package_name.replacen('/', "%2F", 1)
+        } else {
+            package_name.to_string()
+        };
+        let url = format!(
+            "{}/-/npm/v1/attestations/{}@{}",
+            self.registry_url.as_url(),
+            encoded_name,
+            version
+        );
+        debug!(url = %url, "fetching npm attestations");
+
+        let response = self
+            .http
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| RegistryError::Network(e.to_string()))?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(RegistryError::InvalidResponse(format!(
+                "HTTP {} from {}",
+                status, url
+            )));
+        }
+
+        let attestations: NpmAttestations = response
+            .json()
+            .await
+            .map_err(|e| {
+                RegistryError::InvalidResponse(format!("error decoding attestations: {e}"))
+            })?;
+
+        Ok(Some(attestations))
+    }
+
+    /// Convert a raw `NpmPackument` into a unified `PackageMetadata`.
+    ///
+    /// This is the same logic used internally by `fetch_package_metadata`,
+    /// exposed for callers that need both the raw packument and the unified
+    /// metadata (e.g., to extract npm-specific signature data).
+    pub fn packument_to_metadata(
+        package: &PackageId,
+        packument: &NpmPackument,
+    ) -> PackageMetadata {
+        let mut versions = Vec::new();
+        let mut version_metadata = HashMap::new();
+
+        for (ver_str, npm_ver) in &packument.versions {
+            if let Some(meta) = Self::convert_version(package, npm_ver) {
+                versions.push(meta.version.clone());
+                version_metadata.insert(ver_str.clone(), meta);
+            }
+        }
+        versions.sort();
+
+        let dist_tags = packument.dist_tags.clone();
+
+        PackageMetadata {
+            package: package.clone(),
+            description: packument.description.clone(),
+            versions,
+            version_metadata,
+            dist_tags,
+        }
     }
 
     /// Convert an npm version document into a unified VersionMetadata.
