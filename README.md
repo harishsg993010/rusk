@@ -1,6 +1,10 @@
-# rusk
+<p align="center">
+  <img src="assets/logo.png" alt="rusk logo" width="200">
+</p>
 
-A package manager that actually checks what it installs.
+<h1 align="center">rusk</h1>
+
+<p align="center">A package manager that actually checks what it installs.</p>
 
 rusk handles both JavaScript and Python packages from a single tool, while verifying every artifact before it touches your project. It's fast, it's strict about security by default, and it doesn't make you choose between safety and speed.
 
