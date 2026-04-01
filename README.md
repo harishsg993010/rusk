@@ -426,4 +426,4 @@ Everything listed above runs on every `rusk install`. Use `-v` to see the full s
 
 ## License
 
-MIT OR Apache-2.0
+Apache-2.0
