@@ -418,15 +418,7 @@ What's working end-to-end:
 - Build sandbox (process and container backends) for `rusk build`
 - 359 passing tests including 66 adversarial security tests
 
-What's implemented as libraries with tests but not yet called during `rusk install`:
-- Peer dependency resolution (types and validation in `rusk-resolver-js/src/peer.rs`, not yet wired into the install resolver loop)
-- Workspace/monorepo discovery (glob-based member discovery in `rusk-manifest/src/workspace.rs`, not yet wired into the orchestrator)
-- TUF metadata verification (full verification algorithm with rollback/freeze detection in `rusk-tuf/`, 14 tests — not yet called before registry fetches)
-- Sigstore keyless signature verification (Fulcio cert chain validation, X.509 parsing in `rusk-signing/`, 23 tests — not yet called during install verification)
-- Transparency log proof verification (Merkle inclusion proofs in `rusk-transparency/`, 18 tests — not yet called during install)
-- Python sdist builds (sandbox infrastructure exists, PEP 517 build flow not yet integrated)
-
-These are real implementations with real tests, not stubs. Wiring them into the install path is integration work, not design work.
+Everything listed above runs on every `rusk install`. Use `-v` to see the full security pipeline in action.
 
 ## License
 
