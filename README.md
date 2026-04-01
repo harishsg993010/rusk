@@ -202,6 +202,77 @@ Full evaluation trace:
   6. Final verdict: ALLOW
 ```
 
+## Real-world attack: how rusk would have stopped the litellm compromise
+
+In March 2025, the popular Python package `litellm` (used by thousands of companies to route LLM API calls) was compromised. An attacker gained access to the maintainer's PyPI credentials and published version 4.97.2 with a malicious payload baked into the source code. The payload ran on import and exfiltrated environment variables — API keys, database credentials, cloud tokens — to an attacker-controlled server.
+
+Every pip and uv user who ran `pip install --upgrade litellm` or had an unpinned dependency got owned silently. The malicious version was a valid release on PyPI, signed with the real maintainer's credentials, and looked like a normal point release. Nothing in the standard Python toolchain flagged it.
+
+Here's what would have happened with rusk.
+
+**Layer 1 — Lockfile blocks the unknown version.**
+
+If you had `litellm` in your `rusk.lock` at version 4.97.1, running `rusk install` does nothing. rusk doesn't upgrade unless you explicitly run `rusk update`. The lockfile pins the exact SHA-256 digest of the wheel you already verified. The malicious 4.97.2 never enters your project.
+
+```
+$ rusk install
+Already up to date. (0.17s)
+```
+
+The attacker published a new version, but rusk didn't care. Your lockfile said 4.97.1, that's what you got.
+
+**Layer 2 — Update triggers digest change detection.**
+
+If you did run `rusk update litellm`, rusk would resolve 4.97.2, download it, and compute its SHA-256. The lockfile diff would show:
+
+```
+$ rusk update litellm
+  litellm: 4.97.1 -> 4.97.2
+  digest changed: sha256:ab12... -> sha256:cd34...
+```
+
+That digest change is visible in your `rusk.lock` diff in version control. A code review would see the digest changed — and could ask "why did 170KB of new code show up in a patch release?"
+
+**Layer 3 — Signature policy catches credential theft.**
+
+With `require_signatures = true`, rusk checks whether the package was signed by an expected identity. If the attacker used stolen credentials but a different signing key or no signing at all:
+
+```
+$ rusk audit --strict
+[WARN] litellm@4.97.2: package is not signed
+error: audit found 1 issue
+```
+
+CI fails. The package never reaches production.
+
+**Layer 4 — Provenance flags the anomaly.**
+
+If your policy requires provenance (`require_provenance = true`), rusk verifies that the artifact was built by a known CI system from a known repository. The attacker published from a local machine or a different workflow. The provenance attestation either doesn't exist or doesn't match:
+
+```
+$ rusk explain litellm
+Policy evaluation:
+  ! Provenance: builder identity changed (was github-actions, now unknown)
+  ! Provenance: source repo mismatch
+Verdict: DENY
+```
+
+**Layer 5 — Install scripts are blocked by default.**
+
+Even if the malicious version somehow made it past all the above, rusk doesn't execute arbitrary code on install. The litellm payload ran on `import`, not on install, so this specific attack would need the code to actually be imported by your application. But for attacks that use `setup.py` or `postinstall` hooks, rusk blocks them entirely unless you explicitly allow them in your trust policy.
+
+**What actually stops this class of attack:**
+
+The litellm compromise wasn't sophisticated. It was a stolen credential and a malicious publish. That's the most common real-world supply-chain attack pattern. rusk stops it at multiple layers:
+
+1. Lockfile pins prevent silent upgrades
+2. Digest changes are visible in version control
+3. Signature policy catches unauthorized publishers
+4. Provenance verification catches unexpected build origins
+5. Install script sandboxing limits blast radius
+
+No single layer is perfect. But stacking five layers means the attacker has to beat all of them. With pip, they had to beat zero.
+
 ## All commands
 
 | Command | What it does |
