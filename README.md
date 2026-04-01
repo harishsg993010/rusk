@@ -406,19 +406,27 @@ Requires Rust 1.75 or later. The release binary is about 8MB.
 
 rusk is a working package manager. You can use it today to install JavaScript and Python packages with stronger security guarantees than any mainstream alternative.
 
-What's solid:
-- Full transitive dependency resolution (JS and Python)
-- Parallel metadata fetching
-- Content-addressed storage with integrity verification
-- Lockfile-first installs with three-tier caching
+What's working end-to-end:
+- Full transitive dependency resolution for JS (npm) and Python (PyPI)
+- Parallel metadata fetching across dependency tree levels
+- Content-addressed storage with verify-on-read integrity checking
+- Lockfile-first installs with three-tier caching (no-op / warm / cold)
+- Extracted package cache with hardlinks for near-instant reinstalls
 - Policy engine with audit, verify, and explain commands
-- 359 passing tests including adversarial security suite
+- Signature and provenance policy enforcement in audit and explain
+- Revocation checking with epoch-based cache invalidation
+- Build sandbox (process and container backends) for `rusk build`
+- 359 passing tests including 66 adversarial security tests
 
-What's still evolving:
-- Transitive dependency resolution for deeply nested trees needs peer dependency handling
-- Python sdist (source distribution) builds need sandbox integration
-- Workspace/monorepo support is designed but not yet wired
-- TUF and Sigstore integration are implemented as libraries but not yet connected to live infrastructure
+What's implemented as libraries with tests but not yet called during `rusk install`:
+- Peer dependency resolution (types and validation in `rusk-resolver-js/src/peer.rs`, not yet wired into the install resolver loop)
+- Workspace/monorepo discovery (glob-based member discovery in `rusk-manifest/src/workspace.rs`, not yet wired into the orchestrator)
+- TUF metadata verification (full verification algorithm with rollback/freeze detection in `rusk-tuf/`, 14 tests — not yet called before registry fetches)
+- Sigstore keyless signature verification (Fulcio cert chain validation, X.509 parsing in `rusk-signing/`, 23 tests — not yet called during install verification)
+- Transparency log proof verification (Merkle inclusion proofs in `rusk-transparency/`, 18 tests — not yet called during install)
+- Python sdist builds (sandbox infrastructure exists, PEP 517 build flow not yet integrated)
+
+These are real implementations with real tests, not stubs. Wiring them into the install path is integration work, not design work.
 
 ## License
 
