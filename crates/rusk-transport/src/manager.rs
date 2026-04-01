@@ -117,7 +117,7 @@ impl DownloadManager {
         let total = requests.len();
         info!(count = total, "starting download batch");
 
-        let results: Vec<Result<DownloadResult, TransportError>> =
+        let unordered: Vec<(usize, Result<DownloadResult, TransportError>)> =
             stream::iter(requests.into_iter().enumerate())
                 .map(|(idx, req)| {
                     let client = self.client.clone();
@@ -150,12 +150,18 @@ impl DownloadManager {
                             }
                         }
 
-                        result
+                        (idx, result)
                     }
                 })
                 .buffer_unordered(self.config.max_concurrent)
-                .collect()
+                .collect::<Vec<_>>()
                 .await;
+
+        // Sort results back to input order (buffer_unordered returns in completion order)
+        let mut sorted = unordered;
+        sorted.sort_by_key(|(idx, _)| *idx);
+        let results: Vec<Result<DownloadResult, TransportError>> =
+            sorted.into_iter().map(|(_, r)| r).collect();
 
         let succeeded = results.iter().filter(|r| r.is_ok()).count();
         let failed = results.iter().filter(|r| r.is_err()).count();
