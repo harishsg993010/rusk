@@ -1,0 +1,17 @@
+[package]
+name = "rusk-materialize-python"
+version.workspace = true
+edition.workspace = true
+description = "site-packages materializer for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-materialize = { workspace = true }
+rusk-cas = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+zip = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

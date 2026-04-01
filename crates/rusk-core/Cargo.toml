@@ -1,0 +1,22 @@
+[package]
+name = "rusk-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core types, digests, IDs, and error infrastructure for rusk"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+semver = { workspace = true }
+pep440_rs = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

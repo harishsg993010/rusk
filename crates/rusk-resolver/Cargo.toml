@@ -1,0 +1,22 @@
+[package]
+name = "rusk-resolver"
+version.workspace = true
+edition.workspace = true
+description = "Shared dependency resolver framework for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-registry = { workspace = true }
+rusk-policy = { workspace = true }
+rusk-revocation = { workspace = true }
+serde = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+indexmap = { workspace = true }
+
+semver = { workspace = true }
+pep440_rs = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

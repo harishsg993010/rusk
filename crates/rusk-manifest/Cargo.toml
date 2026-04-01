@@ -1,0 +1,19 @@
+[package]
+name = "rusk-manifest"
+version.workspace = true
+edition.workspace = true
+description = "Manifest parser for rusk project files"
+
+[dependencies]
+rusk-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+semver = { workspace = true }
+pep440_rs = { workspace = true }
+glob = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

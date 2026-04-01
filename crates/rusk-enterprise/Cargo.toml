@@ -1,0 +1,24 @@
+[package]
+name = "rusk-enterprise"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Enterprise features: internal registries, org policies, airgap, audit export"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-policy = { workspace = true }
+rusk-revocation = { workspace = true }
+rusk-tuf = { workspace = true }
+rusk-cas = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+semver = { workspace = true }

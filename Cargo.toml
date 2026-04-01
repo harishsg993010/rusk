@@ -1,0 +1,143 @@
+[package]
+name = "rusk-workspace"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/rusk-core",
+    "crates/rusk-manifest",
+    "crates/rusk-lockfile",
+    "crates/rusk-cas",
+    "crates/rusk-transport",
+    "crates/rusk-tuf",
+    "crates/rusk-signing",
+    "crates/rusk-transparency",
+    "crates/rusk-provenance",
+    "crates/rusk-policy",
+    "crates/rusk-revocation",
+    "crates/rusk-registry",
+    "crates/rusk-registry-npm",
+    "crates/rusk-registry-pypi",
+    "crates/rusk-resolver",
+    "crates/rusk-resolver-js",
+    "crates/rusk-resolver-python",
+    "crates/rusk-materialize",
+    "crates/rusk-materialize-js",
+    "crates/rusk-materialize-python",
+    "crates/rusk-sandbox",
+    "crates/rusk-orchestrator",
+    "crates/rusk-observability",
+    "crates/rusk-enterprise",
+    "crates/rusk-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/user/rusk"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Crypto
+sha2 = "0.10"
+blake3 = "1"
+ed25519-dalek = { version = "2", features = ["batch"] }
+p256 = "0.13"
+x509-cert = "0.2"
+signature = "2"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Data structures
+dashmap = "6"
+lru = "0.12"
+indexmap = { version = "2", features = ["serde"] }
+bytes = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+console = "0.15"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Testing
+proptest = "1"
+tempfile = "3"
+wiremock = "0.6"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+miette = { version = "7", features = ["fancy"] }
+
+# Misc
+url = { version = "2", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+hex = "0.4"
+glob = "0.3"
+semver = { version = "1", features = ["serde"] }
+pep440_rs = { version = "0.6", features = ["serde"] }
+pep508_rs = { version = "0.6", features = ["serde"] }
+memmap2 = "0.9"
+flate2 = "1"
+tar = "0.4"
+zip = "2"
+
+# Internal crates
+rusk-core = { path = "crates/rusk-core" }
+rusk-manifest = { path = "crates/rusk-manifest" }
+rusk-lockfile = { path = "crates/rusk-lockfile" }
+rusk-cas = { path = "crates/rusk-cas" }
+rusk-transport = { path = "crates/rusk-transport" }
+rusk-tuf = { path = "crates/rusk-tuf" }
+rusk-signing = { path = "crates/rusk-signing" }
+rusk-transparency = { path = "crates/rusk-transparency" }
+rusk-provenance = { path = "crates/rusk-provenance" }
+rusk-policy = { path = "crates/rusk-policy" }
+rusk-revocation = { path = "crates/rusk-revocation" }
+rusk-registry = { path = "crates/rusk-registry" }
+rusk-registry-npm = { path = "crates/rusk-registry-npm" }
+rusk-registry-pypi = { path = "crates/rusk-registry-pypi" }
+rusk-resolver = { path = "crates/rusk-resolver" }
+rusk-resolver-js = { path = "crates/rusk-resolver-js" }
+rusk-resolver-python = { path = "crates/rusk-resolver-python" }
+rusk-materialize = { path = "crates/rusk-materialize" }
+rusk-materialize-js = { path = "crates/rusk-materialize-js" }
+rusk-materialize-python = { path = "crates/rusk-materialize-python" }
+rusk-sandbox = { path = "crates/rusk-sandbox" }
+rusk-orchestrator = { path = "crates/rusk-orchestrator" }
+rusk-observability = { path = "crates/rusk-observability" }
+rusk-enterprise = { path = "crates/rusk-enterprise" }
+
+[dev-dependencies]
+rusk-core = { workspace = true }
+rusk-lockfile = { workspace = true }
+rusk-cas = { workspace = true }
+rusk-revocation = { workspace = true }
+rusk-enterprise = { workspace = true }
+rusk-sandbox = { workspace = true }
+tempfile = { workspace = true }
+semver = { workspace = true }
+chrono = { workspace = true }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

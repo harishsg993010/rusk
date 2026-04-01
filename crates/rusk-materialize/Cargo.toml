@@ -1,0 +1,18 @@
+[package]
+name = "rusk-materialize"
+version.workspace = true
+edition.workspace = true
+description = "Shared materialization framework for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-cas = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+semver = { workspace = true }

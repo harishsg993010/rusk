@@ -1,0 +1,32 @@
+[package]
+name = "rusk-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Command-line interface for rusk package manager"
+
+[[bin]]
+name = "rusk"
+path = "src/main.rs"
+
+[dependencies]
+rusk-orchestrator = { workspace = true }
+rusk-core = { workspace = true }
+rusk-manifest = { workspace = true }
+rusk-lockfile = { workspace = true }
+rusk-cas = { workspace = true }
+rusk-materialize = { workspace = true }
+rusk-observability = { workspace = true }
+clap = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

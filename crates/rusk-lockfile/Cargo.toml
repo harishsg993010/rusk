@@ -1,0 +1,18 @@
+[package]
+name = "rusk-lockfile"
+version.workspace = true
+edition.workspace = true
+description = "Lockfile engine for rusk deterministic installs"
+
+[dependencies]
+rusk-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+semver = { workspace = true }

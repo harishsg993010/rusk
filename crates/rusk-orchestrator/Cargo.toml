@@ -1,0 +1,43 @@
+[package]
+name = "rusk-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Top-level orchestrator that coordinates all rusk subsystems"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-manifest = { workspace = true }
+rusk-lockfile = { workspace = true }
+rusk-cas = { workspace = true }
+rusk-transport = { workspace = true }
+rusk-tuf = { workspace = true }
+rusk-signing = { workspace = true }
+rusk-transparency = { workspace = true }
+rusk-provenance = { workspace = true }
+rusk-policy = { workspace = true }
+rusk-revocation = { workspace = true }
+rusk-registry = { workspace = true }
+rusk-registry-npm = { workspace = true }
+rusk-registry-pypi = { workspace = true }
+rusk-resolver = { workspace = true }
+rusk-resolver-js = { workspace = true }
+rusk-materialize = { workspace = true }
+rusk-materialize-js = { workspace = true }
+rusk-materialize-python = { workspace = true }
+pep440_rs = { workspace = true }
+rusk-sandbox = { workspace = true }
+rusk-enterprise = { workspace = true }
+rusk-observability = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+semver = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+futures = { workspace = true }

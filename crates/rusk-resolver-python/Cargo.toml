@@ -1,0 +1,20 @@
+[package]
+name = "rusk-resolver-python"
+version.workspace = true
+edition.workspace = true
+description = "Python ecosystem resolver for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-resolver = { workspace = true }
+rusk-registry = { workspace = true }
+rusk-registry-pypi = { workspace = true }
+pep440_rs = { workspace = true }
+pep508_rs = { workspace = true }
+serde = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

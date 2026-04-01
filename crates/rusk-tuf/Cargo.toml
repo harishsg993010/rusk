@@ -1,0 +1,21 @@
+[package]
+name = "rusk-tuf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TUF (The Update Framework) metadata verification for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+ed25519-dalek = { workspace = true }
+signature = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

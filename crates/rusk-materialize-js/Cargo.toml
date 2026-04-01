@@ -1,0 +1,18 @@
+[package]
+name = "rusk-materialize-js"
+version.workspace = true
+edition.workspace = true
+description = "node_modules materializer for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-materialize = { workspace = true }
+rusk-cas = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+semver = { workspace = true }

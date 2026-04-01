@@ -1,0 +1,21 @@
+[package]
+name = "rusk-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Build sandbox and isolation layer for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+glob = { workspace = true }
+
+[dev-dependencies]
+semver = { workspace = true }

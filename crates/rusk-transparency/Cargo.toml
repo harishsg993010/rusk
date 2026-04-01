@@ -1,0 +1,21 @@
+[package]
+name = "rusk-transparency"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Transparency log client for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+signature = { workspace = true }

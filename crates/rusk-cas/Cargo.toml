@@ -1,0 +1,21 @@
+[package]
+name = "rusk-cas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Content-addressed storage for package artifacts"
+
+[dependencies]
+rusk-core = { workspace = true }
+sha2 = { workspace = true }
+memmap2 = { workspace = true }
+uuid = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+rusk-revocation = { workspace = true }
+rusk-signing = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }

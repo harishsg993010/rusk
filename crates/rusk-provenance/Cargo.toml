@@ -1,0 +1,24 @@
+[package]
+name = "rusk-provenance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Provenance and attestation verification for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-signing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+rusk-tuf = { workspace = true }
+rusk-transparency = { workspace = true }
+sha2 = { workspace = true }
+dashmap = { workspace = true }

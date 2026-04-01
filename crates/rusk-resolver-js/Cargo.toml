@@ -1,0 +1,19 @@
+[package]
+name = "rusk-resolver-js"
+version.workspace = true
+edition.workspace = true
+description = "JavaScript/TypeScript ecosystem resolver for rusk"
+
+[dependencies]
+rusk-core = { workspace = true }
+rusk-resolver = { workspace = true }
+rusk-registry = { workspace = true }
+rusk-registry-npm = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
