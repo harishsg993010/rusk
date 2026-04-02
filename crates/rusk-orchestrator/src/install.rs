@@ -912,6 +912,9 @@ pub async fn run_install(
     // materializing anything.
     emit("Verifying artifact trust chain...");
 
+    // Collect verified provenance for each package (index → LockedProvenance)
+    let mut verified_provenance: std::collections::HashMap<usize, rusk_lockfile::schema::LockedProvenance> = std::collections::HashMap::new();
+
     // Fetch npm registry signing keys once for signature verification.
     // We reuse the npm_client created during resolution if JS deps exist;
     // otherwise we create an ephemeral one only when needed.
@@ -1060,6 +1063,12 @@ pub async fn run_install(
                                 a.predicate_type.contains("slsa.dev/provenance")
                             });
                             if has_provenance {
+                                verified_provenance.insert(i, rusk_lockfile::schema::LockedProvenance {
+                                    publisher_kind: "npm".to_string(),
+                                    repository: None,
+                                    workflow: None,
+                                    verified_at: Some(chrono::Utc::now()),
+                                });
                                 info!(
                                     package = %pkg_name,
                                     version = %rp.version,
@@ -1113,6 +1122,18 @@ pub async fn run_install(
                             .await
                         {
                             Ok(Some(provenance)) => {
+                                // Record provenance for lockfile comparison
+                                let pub_info = provenance.publisher.as_ref()
+                                    .or_else(|| provenance.attestation_bundles.first().map(|b| &b.publisher));
+                                if let Some(pi) = pub_info {
+                                    verified_provenance.insert(i, rusk_lockfile::schema::LockedProvenance {
+                                        publisher_kind: pi.kind.clone(),
+                                        repository: pi.repository.clone(),
+                                        workflow: pi.workflow.clone(),
+                                        verified_at: Some(chrono::Utc::now()),
+                                    });
+                                }
+
                                 // Log top-level publisher if present
                                 if let Some(ref pub_info) = provenance.publisher {
                                     info!(
@@ -1382,9 +1403,27 @@ pub async fn run_install(
 
     let mut lockfile = Lockfile::new();
 
+    // Check if there's an existing lockfile to compare provenance against
+    let old_lockfile = if lockfile_path.exists() {
+        rusk_lockfile::load_lockfile(&lockfile_path).ok()
+    } else {
+        None
+    };
+
     // Add JS packages to lockfile
     for (i, rp) in resolved_packages.iter().enumerate() {
         let digest = download_digests[i];
+        let provenance = verified_provenance.get(&i).cloned();
+
+        // Compare provenance with previous lockfile entry
+        if let Some(ref old_lf) = old_lockfile {
+            let canonical = rp.package_id.canonical();
+            if let Some(old_pkg) = old_lf.packages.get(&canonical) {
+                detect_provenance_change(&rp.package_id.display_name(), &rp.version.to_string(),
+                    old_pkg.provenance.as_ref(), provenance.as_ref(), &emit);
+            }
+        }
+
         let locked_pkg = LockedPackage {
             package: rp.package_id.clone(),
             version: rp.version.clone(),
@@ -1394,6 +1433,7 @@ pub async fn run_install(
             dependencies: Vec::new(),
             dev: false,
             signer: None,
+            provenance,
             resolved_by: Some("rusk-orchestrator".to_string()),
         };
         lockfile.add_package(locked_pkg);
@@ -1403,6 +1443,18 @@ pub async fn run_install(
     for (i, rp) in py_resolved_packages.iter().enumerate() {
         let digest_idx = js_count + i;
         let digest = download_digests[digest_idx];
+        let prov_key = js_count + i;
+        let provenance = verified_provenance.get(&prov_key).cloned();
+
+        // Compare provenance with previous lockfile entry
+        if let Some(ref old_lf) = old_lockfile {
+            let canonical = rp.package_id.canonical();
+            if let Some(old_pkg) = old_lf.packages.get(&canonical) {
+                detect_provenance_change(&rp.package_id.display_name(), &rp.version.to_string(),
+                    old_pkg.provenance.as_ref(), provenance.as_ref(), &emit);
+            }
+        }
+
         let locked_pkg = LockedPackage {
             package: rp.package_id.clone(),
             version: rp.version.clone(),
@@ -1412,6 +1464,7 @@ pub async fn run_install(
             dependencies: Vec::new(),
             dev: false,
             signer: None,
+            provenance,
             resolved_by: Some("rusk-orchestrator".to_string()),
         };
         lockfile.add_package(locked_pkg);
@@ -1550,4 +1603,93 @@ fn hardlink_dir(src: &Path, dst: &Path) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Detect provenance changes between the old lockfile and new install.
+///
+/// Flags three critical attack patterns:
+/// 1. Package HAD provenance, now DOESN'T (litellm-style: attacker uploads directly)
+/// 2. Publisher/repository changed (attacker uses different build origin)
+/// 3. Workflow changed (attacker uses different CI pipeline)
+fn detect_provenance_change(
+    pkg_name: &str,
+    version: &str,
+    old: Option<&rusk_lockfile::schema::LockedProvenance>,
+    new: Option<&rusk_lockfile::schema::LockedProvenance>,
+    emit: &dyn Fn(&str),
+) {
+    match (old, new) {
+        (Some(old_prov), None) => {
+            // CRITICAL: Had provenance before, lost it now
+            warn!(
+                package = %pkg_name,
+                version = %version,
+                old_publisher = %old_prov.publisher_kind,
+                old_repo = old_prov.repository.as_deref().unwrap_or("unknown"),
+                "PROVENANCE DROPPED: package previously had attestation but update does not"
+            );
+            emit(&format!(
+                "  SECURITY: {pkg_name}@{version} — provenance DROPPED (was {} from {}, now missing)",
+                old_prov.publisher_kind,
+                old_prov.repository.as_deref().unwrap_or("unknown")
+            ));
+        }
+        (Some(old_prov), Some(new_prov)) => {
+            // Check for publisher change
+            if old_prov.publisher_kind != new_prov.publisher_kind {
+                warn!(
+                    package = %pkg_name,
+                    version = %version,
+                    old_publisher = %old_prov.publisher_kind,
+                    new_publisher = %new_prov.publisher_kind,
+                    "PUBLISHER CHANGED"
+                );
+                emit(&format!(
+                    "  SECURITY: {pkg_name}@{version} — publisher changed ({} -> {})",
+                    old_prov.publisher_kind, new_prov.publisher_kind
+                ));
+            }
+            // Check for repository change
+            if old_prov.repository != new_prov.repository {
+                warn!(
+                    package = %pkg_name,
+                    version = %version,
+                    old_repo = old_prov.repository.as_deref().unwrap_or("none"),
+                    new_repo = new_prov.repository.as_deref().unwrap_or("none"),
+                    "SOURCE REPOSITORY CHANGED"
+                );
+                emit(&format!(
+                    "  SECURITY: {pkg_name}@{version} — source repo changed ({} -> {})",
+                    old_prov.repository.as_deref().unwrap_or("none"),
+                    new_prov.repository.as_deref().unwrap_or("none")
+                ));
+            }
+            // Check for workflow change
+            if old_prov.workflow != new_prov.workflow {
+                warn!(
+                    package = %pkg_name,
+                    version = %version,
+                    old_workflow = old_prov.workflow.as_deref().unwrap_or("none"),
+                    new_workflow = new_prov.workflow.as_deref().unwrap_or("none"),
+                    "BUILD WORKFLOW CHANGED"
+                );
+                emit(&format!(
+                    "  SECURITY: {pkg_name}@{version} — workflow changed ({} -> {})",
+                    old_prov.workflow.as_deref().unwrap_or("none"),
+                    new_prov.workflow.as_deref().unwrap_or("none")
+                ));
+            }
+        }
+        (None, Some(_new_prov)) => {
+            // Package gained provenance — this is good, not an attack
+            info!(
+                package = %pkg_name,
+                version = %version,
+                "package now has provenance attestation (new)"
+            );
+        }
+        (None, None) => {
+            // Neither had provenance — nothing to compare
+        }
+    }
 }

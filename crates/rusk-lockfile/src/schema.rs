@@ -44,9 +44,29 @@ pub struct LockedPackage {
     /// Signer reference, if the artifact was signed.
     #[serde(default)]
     pub signer: Option<LockedSignerRef>,
+    /// Provenance attestation metadata, if verified during install.
+    #[serde(default)]
+    pub provenance: Option<LockedProvenance>,
     /// Resolution metadata (e.g., which rule resolved it).
     #[serde(default)]
     pub resolved_by: Option<String>,
+}
+
+/// Provenance metadata recorded at install time.
+/// Used to detect attestation changes on update (e.g., litellm-style attacks).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LockedProvenance {
+    /// Publisher kind (e.g., "GitHub", "GitLab").
+    pub publisher_kind: String,
+    /// Source repository (e.g., "kjd/idna").
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// CI workflow that built the artifact (e.g., "release.yml").
+    #[serde(default)]
+    pub workflow: Option<String>,
+    /// When the provenance was verified.
+    #[serde(default)]
+    pub verified_at: Option<DateTime<Utc>>,
 }
 
 /// A reference to a dependency within the lockfile.
