@@ -28,6 +28,12 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: rusk-Darwin-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: rusk-Windows-x86_64.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            artifact: rusk-Windows-aarch64.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -49,10 +55,16 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p rusk-cli
 
-      - name: Package binary
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
         run: |
           cp target/${{ matrix.target }}/release/rusk ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "target/${{ matrix.target }}/release/rusk.exe" "${{ matrix.artifact }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -90,4 +102,6 @@ jobs:
             rusk-Linux-aarch64
             rusk-Darwin-x86_64
             rusk-Darwin-aarch64
+            rusk-Windows-x86_64.exe
+            rusk-Windows-aarch64.exe
             checksums-sha256.txt
