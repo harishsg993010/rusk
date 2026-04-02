@@ -59,6 +59,8 @@ pub enum Commands {
     Init(commands::init::InitArgs),
     /// View or modify rusk configuration.
     Config(commands::config::ConfigArgs),
+    /// Add a package to the manifest and install it.
+    Add(commands::add::AddArgs),
 }
 
 #[tokio::main]
@@ -94,5 +96,6 @@ async fn main() -> Result<()> {
         Commands::Gc(args) => commands::gc::run(args).await,
         Commands::Init(args) => commands::init::run(args).await,
         Commands::Config(args) => commands::config::run(args).await,
+        Commands::Add(args) => commands::add::run(args).await,
     }
 }
