@@ -45,11 +45,11 @@ Policy evaluation:
 Verdict: ALLOW - package is trusted
 ```
 
+Works on existing JS and Python projects without migration.
+
 ## Why rusk?
 
-Most package managers ultimately trust the registry response and artifact served at install time. If someone compromises a registry, pushes a malicious update, or swaps a tarball on a CDN, your package manager will happily install it.
-
-rusk doesn't trust anyone. Every package goes through:
+Most package managers trust the registry response and artifact served at install time. rusk doesn't. Every package goes through:
 
 - **SHA-256 digest verification** before anything gets written to disk
 - **Content-addressed storage** so the same bytes always produce the same hash
@@ -57,7 +57,7 @@ rusk doesn't trust anyone. Every package goes through:
 - **Signature and provenance policy** that you control
 - **Tamper detection** that catches corrupted or modified packages
 
-And it does all of this while being faster than npm and competitive with bun and uv.
+Faster than npm, competitive with bun and uv — while doing more work on every install.
 
 ## Speed
 
@@ -79,18 +79,20 @@ Benchmarked against real package managers on express@^4.21.0 (70 transitive depe
 | Warm cache | 0.14s | 0.27s |
 | No-op | 0.20s | 0.27s |
 
-rusk is faster than bun on warm installs and no-ops. Faster than uv on warm and no-op. And it's doing more work — verifying digests, checking CAS integrity, computing lockfile hashes — on every single run.
+rusk wins where developers feel package managers most often: warm installs and no-op runs. And it's doing more work — verifying digests, checking CAS integrity, computing lockfile hashes — on every single run.
 
-The cold install gap comes down to network optimization. bun and uv have had years to optimize their HTTP stacks. rusk's cold path will get faster.
+The cold install gap is network optimization. bun and uv have had years to tune their HTTP stacks. rusk's cold path will get faster.
 
 ## Quick start
 
 ```bash
-# Build from source (requires Rust 1.75+)
+# Download the binary from GitHub releases
+curl -fsSL https://github.com/harishsg993010/rusk/releases/latest/download/rusk-$(uname -s)-$(uname -m) -o rusk
+chmod +x rusk && mv rusk /usr/local/bin/
+
+# Or build from source (requires Rust 1.75+)
 cargo build --release -p rusk-cli
 cp target/release/rusk /usr/local/bin/
-
-# Or download the binary from GitHub releases
 ```
 
 ### Start a new project
