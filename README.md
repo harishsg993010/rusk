@@ -86,9 +86,9 @@ The cold install gap is network optimization. bun and uv have had years to tune 
 ## Quick start
 
 ```bash
-# Download the binary from GitHub releases
+# Download the binary from GitHub releases (Linux/macOS, x86_64/aarch64)
 curl -fsSL https://github.com/harishsg993010/rusk/releases/latest/download/rusk-$(uname -s)-$(uname -m) -o rusk
-chmod +x rusk && mv rusk /usr/local/bin/
+chmod +x rusk && sudo mv rusk /usr/local/bin/
 
 # Or build from source (requires Rust 1.75+)
 cargo build --release -p rusk-cli
