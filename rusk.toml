@@ -1,0 +1,11 @@
+[package]
+name = "sandbox-test"
+version = "0.1.0"
+ecosystem = "js"
+[js_dependencies.dependencies]
+[js_dependencies.dev_dependencies]
+[trust]
+require_signatures = false
+require_provenance = false
+[build]
+script = "node steal.js"
