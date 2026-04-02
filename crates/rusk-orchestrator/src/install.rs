@@ -110,13 +110,8 @@ pub async fn run_install(
         CasStore::open(&config.cas_dir).map_err(InstallError::Io)?,
     );
 
-    // Step 2: Read and parse the manifest
+    // Step 2: Read and parse the manifest (with auto-detection fallback)
     let manifest_path = config.manifest_path();
-    if !manifest_path.exists() {
-        return Err(InstallError::ManifestNotFound(
-            manifest_path.to_string_lossy().to_string(),
-        ));
-    }
 
     // FAST PATH: If lockfile + install state exist and node_modules is populated,
     // skip resolution and network entirely. Just verify and hardlink from cache.
@@ -338,12 +333,43 @@ pub async fn run_install(
         }
     }
 
-    info!(manifest = %manifest_path.display(), "reading manifest");
-    emit("Reading rusk.toml...");
+    // If rusk.toml doesn't exist, try to auto-detect from other manifest formats
+    let manifest: Manifest = if manifest_path.exists() {
+        info!(manifest = %manifest_path.display(), "reading manifest");
+        emit("Reading rusk.toml...");
+        let content = std::fs::read_to_string(&manifest_path)?;
+        rusk_manifest::parse_manifest(&content)
+            .map_err(|e| InstallError::ManifestParse(e.to_string()))?
+    } else {
+        // Try package.json > pyproject.toml > requirements.txt
+        let pkg_json = config.project_dir.join("package.json");
+        let pyproject = config.project_dir.join("pyproject.toml");
+        let req_txt = config.project_dir.join("requirements.txt");
 
-    let manifest_content = std::fs::read_to_string(&manifest_path)?;
-    let manifest: Manifest = rusk_manifest::parse_manifest(&manifest_content)
-        .map_err(|e| InstallError::ManifestParse(e.to_string()))?;
+        if pkg_json.exists() {
+            emit("Detected package.json, importing dependencies...");
+            info!(path = %pkg_json.display(), "auto-detected package.json");
+            let content = std::fs::read_to_string(&pkg_json)?;
+            rusk_manifest::parse_package_json(&content)
+                .map_err(|e| InstallError::ManifestParse(format!("package.json: {e}")))?
+        } else if pyproject.exists() {
+            emit("Detected pyproject.toml, importing dependencies...");
+            info!(path = %pyproject.display(), "auto-detected pyproject.toml");
+            let content = std::fs::read_to_string(&pyproject)?;
+            rusk_manifest::parse_pyproject_toml(&content)
+                .map_err(|e| InstallError::ManifestParse(format!("pyproject.toml: {e}")))?
+        } else if req_txt.exists() {
+            emit("Detected requirements.txt, importing dependencies...");
+            info!(path = %req_txt.display(), "auto-detected requirements.txt");
+            let content = std::fs::read_to_string(&req_txt)?;
+            rusk_manifest::parse_requirements_txt(&content)
+                .map_err(|e| InstallError::ManifestParse(format!("requirements.txt: {e}")))?
+        } else {
+            return Err(InstallError::ManifestNotFound(
+                "No rusk.toml, package.json, pyproject.toml, or requirements.txt found".to_string(),
+            ));
+        }
+    };
 
     // Step 2a-ws: Workspace discovery
     if let Some(ref ws_config) = manifest.workspace {

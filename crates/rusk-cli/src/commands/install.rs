@@ -45,17 +45,6 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     config.frozen = args.frozen;
     config.include_dev = !args.production;
 
-    // Check that rusk.toml exists
-    if !config.manifest_path().exists() {
-        crate::output::print_error(
-            "rusk.toml not found. Run 'rusk init' to create a project."
-        );
-        return Err(miette::miette!(
-            "rusk.toml not found at {}",
-            config.manifest_path().display()
-        ));
-    }
-
     // Create a spinner for progress
     let spinner = crate::output::create_spinner("Resolving dependencies...");
     let spinner_clone = spinner.clone();
@@ -102,13 +91,25 @@ pub async fn run(args: InstallArgs) -> Result<()> {
 
                 // Print ecosystem-specific materialization paths
                 let manifest_path = config.manifest_path();
+                let project_dir = config.project_dir.clone();
+                let has_js;
+                let has_python;
+
                 if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                    if content.contains("[js_dependencies") {
-                        crate::output::print_info("  Materialized JS packages to node_modules/");
-                    }
-                    if content.contains("[python_dependencies") {
-                        crate::output::print_info("  Materialized Python packages to .venv/lib/site-packages/");
-                    }
+                    has_js = content.contains("[js_dependencies");
+                    has_python = content.contains("[python_dependencies");
+                } else {
+                    // Auto-detected manifest: infer ecosystem from file type
+                    has_js = project_dir.join("package.json").exists();
+                    has_python = project_dir.join("pyproject.toml").exists()
+                        || project_dir.join("requirements.txt").exists();
+                }
+
+                if has_js {
+                    crate::output::print_info("  Materialized JS packages to node_modules/");
+                }
+                if has_python {
+                    crate::output::print_info("  Materialized Python packages to .venv/lib/site-packages/");
                 }
             }
 

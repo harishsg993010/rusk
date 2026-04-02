@@ -16,7 +16,10 @@ pub mod validate;
 pub mod workspace;
 
 pub use normalize::normalize_manifest;
-pub use parser::{find_manifest, load_manifest, parse_manifest, ParseError};
+pub use parser::{
+    find_manifest, load_manifest, parse_manifest, parse_package_json, parse_pyproject_toml,
+    parse_requirements_txt, ParseError,
+};
 pub use schema::{
     BuildConfig, DependencyEntry, JsDependencies, Manifest, PackageMetadata, PythonDependencies,
     RegistryConfig, TrustConfig, WorkspaceConfig,
