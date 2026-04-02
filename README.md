@@ -33,51 +33,61 @@ And it does all of this while being faster than npm and competitive with bun and
 cargo build --release -p rusk-cli
 cp target/release/rusk /usr/local/bin/
 
-# JavaScript project
-rusk init --ecosystem js --name my-app
-# Edit rusk.toml to add dependencies, then:
-rusk install
+# Or download the binary from GitHub releases
+```
 
-# Python project
+### Drop into any existing project
+
+rusk auto-detects `package.json`, `requirements.txt`, and `pyproject.toml`. No config file needed.
+
+```bash
+cd my-express-app/       # has package.json
+rusk install             # just works
+
+cd my-flask-app/         # has requirements.txt
+rusk install             # just works
+
+cd my-modern-lib/        # has pyproject.toml
+rusk install             # just works
+```
+
+### Or start fresh
+
+```bash
+rusk init --ecosystem js --name my-app
+rusk add express@^4.21.0
+rusk add cors@^2.8.5
+
 rusk init --ecosystem python --name my-lib
-# Edit rusk.toml, then:
-rusk install
+rusk add "flask>=3.0.0"
+rusk add "requests>=2.28.0"
+```
+
+### Add packages
+
+```bash
+# npm style
+rusk add lodash@^4.17.21
+rusk add vitest@^1.0.0 -D          # dev dependency
+
+# pip style
+rusk add "requests>=2.28.0"
+rusk add "flask>=3.0.0"
+
+# Works with any manifest format
+rusk add express                     # adds to package.json
+rusk add "six>=1.16.0"              # adds to requirements.txt
 ```
 
 ## How it works
 
-### JavaScript
-
-```bash
-$ rusk init --ecosystem js --name my-app
-```
-
-This creates a `rusk.toml`:
-
-```toml
-[package]
-name = "my-app"
-version = "0.1.0"
-ecosystem = "js"
-
-[js_dependencies.dependencies]
-express = "^4.21.0"
-ms = "2.1.3"
-
-[js_dependencies.dev_dependencies]
-
-[trust]
-require_signatures = false
-require_provenance = false
-```
+rusk resolves the entire transitive dependency tree, downloads every artifact, verifies its SHA-256 digest, stores it in a content-addressed cache, and extracts it into the right place. The lockfile pins every package with its exact digest.
 
 ```bash
 $ rusk install
 Installed 70 packages (70 downloaded) in 5.1s
   Materialized JS packages to node_modules/
 ```
-
-rusk resolves the entire transitive dependency tree, downloads every tarball, verifies its SHA-256 digest, stores it in a content-addressed cache, and extracts it to `node_modules/`. The lockfile pins every package with its exact digest.
 
 Second install? Already cached:
 
@@ -94,39 +104,16 @@ $ rusk install
 Already up to date. (0.17s)
 ```
 
-### Python
+JS packages go to `node_modules/`. Python wheels go to `.venv/lib/site-packages/`. Both ecosystems share the same CAS, lockfile, and security pipeline.
 
-```bash
-$ rusk init --ecosystem python --name my-lib
-```
+### Supported manifest formats
 
-```toml
-[package]
-name = "my-lib"
-version = "0.1.0"
-ecosystem = "python"
-
-[python_dependencies]
-requires_python = ">=3.9"
-
-[python_dependencies.dependencies]
-requests = ">=2.28.0"
-six = ">=1.16.0"
-
-[python_dependencies.dev_dependencies]
-```
-
-```bash
-$ rusk install
-Installed 2 packages (2 downloaded) in 0.8s
-  Materialized Python packages to .venv/lib/site-packages/
-```
-
-Wheels are extracted directly into `.venv/lib/site-packages/` with proper dist-info directories. Use them with:
-
-```bash
-PYTHONPATH=".venv/lib/site-packages" python3 your_script.py
-```
+| Format | Ecosystem | Auto-detected |
+|--------|-----------|---------------|
+| `rusk.toml` | JS + Python | Yes (primary) |
+| `package.json` | JS | Yes |
+| `pyproject.toml` | Python (PEP 621 + Poetry) | Yes |
+| `requirements.txt` | Python | Yes |
 
 ## Security features
 
@@ -295,8 +282,9 @@ No single layer is perfect. But stacking five layers means the attacker has to b
 
 | Command | What it does |
 |---------|-------------|
-| `rusk init` | Create a new project with `rusk.toml` |
 | `rusk install` | Resolve, download, verify, and install packages |
+| `rusk add <pkg>` | Add a package to the manifest and install it |
+| `rusk init` | Create a new project with `rusk.toml` |
 | `rusk verify` | Check installed packages match lockfile digests |
 | `rusk audit` | Evaluate trust policy across all dependencies |
 | `rusk explain <pkg>` | Show why a package was allowed or blocked |
@@ -366,6 +354,34 @@ Every level still verifies integrity. The warm path reads each CAS blob and reco
 
 Both ecosystems share the same CAS, lockfile, policy engine, revocation system, and verification pipeline. The only ecosystem-specific parts are registry clients and file layout.
 
+### Live registry signature verification
+
+rusk doesn't just check digests. It verifies cryptographic signatures against live registry infrastructure.
+
+**npm**: Fetches registry ECDSA-P256 signing keys, verifies signatures on every package:
+```
+npm ECDSA signature verified, package: express, keyid: SHA256:DhQ8wR5APBvFHLF/+Tc+...
+npm ECDSA signature verified, package: axios, keyid: SHA256:DhQ8wR5APBvFHLF/+Tc+...
+provenance attestation found (SLSA), package: axios
+```
+
+**PyPI**: Fetches PEP 740 attestations from the Integrity API, verifies Trusted Publisher identity:
+```
+PyPI attestation bundle verified, package: litellm, publisher: GitHub,
+  repository: BerriAI/project-releaser, workflow: publish-litellm.yml
+PyPI attestation bundle verified, package: idna, publisher: GitHub,
+  repository: kjd/idna, workflow: deploy.yml
+```
+
+### Provenance change detection
+
+rusk stores provenance metadata in the lockfile. On update, it compares old vs new and flags:
+
+- **PROVENANCE DROPPED**: package had attestation, update doesn't (litellm attack pattern)
+- **PUBLISHER CHANGED**: different CI system
+- **SOURCE REPOSITORY CHANGED**: different repo (fork attack)
+- **BUILD WORKFLOW CHANGED**: different pipeline
+
 ## What rusk checks that others don't
 
 | Check | rusk | npm | bun | pip | uv |
@@ -373,15 +389,17 @@ Both ecosystems share the same CAS, lockfile, policy engine, revocation system, 
 | SHA-256 every artifact | Yes | Partial | No | No | No |
 | CAS verify-on-read | Yes | No | No | No | No |
 | Lockfile digest pinning | Yes | Yes | Yes | No | Yes |
-| Signature policy enforcement | Yes | No | No | No | No |
-| Provenance verification | Yes | No | No | No | No |
+| npm ECDSA signature verification | Yes | `npm audit signatures` | No | N/A | N/A |
+| PyPI PEP 740 attestation verification | Yes | N/A | N/A | No | No |
+| Provenance change detection on update | Yes | No | No | No | No |
 | Trust explanation per package | Yes | No | No | No | No |
 | Revocation epoch tracking | Yes | No | No | No | No |
 | Build script sandbox | Yes | No | No | No | No |
+| Auto-detect package.json/requirements.txt | Yes | N/A | N/A | N/A | N/A |
 
 ## Testing
 
-359 tests across the workspace, including 66 adversarial security tests that simulate real supply-chain attacks:
+377 tests across the workspace, including 66 adversarial security tests that simulate real supply-chain attacks:
 
 - CAS corruption detection
 - Lockfile digest tampering
@@ -403,7 +421,7 @@ cargo test --workspace
 ## Building from source
 
 ```bash
-git clone https://github.com/user/rusk.git
+git clone https://github.com/harishsg993010/rusk.git
 cd rusk
 cargo build --release -p rusk-cli
 ```
@@ -416,15 +434,21 @@ rusk is a working package manager. You can use it today to install JavaScript an
 
 What's working end-to-end:
 - Full transitive dependency resolution for JS (npm) and Python (PyPI)
+- Auto-detection of package.json, requirements.txt, pyproject.toml
+- `rusk add` command for adding packages to any manifest format
 - Parallel metadata fetching across dependency tree levels
 - Content-addressed storage with verify-on-read integrity checking
 - Lockfile-first installs with three-tier caching (no-op / warm / cold)
 - Extracted package cache with hardlinks for near-instant reinstalls
+- npm ECDSA signature verification against live registry keys
+- PyPI PEP 740 attestation verification via Integrity API
+- Provenance change detection on update (catches litellm-style attacks)
 - Policy engine with audit, verify, and explain commands
-- Signature and provenance policy enforcement in audit and explain
 - Revocation checking with epoch-based cache invalidation
 - Build sandbox (process and container backends) for `rusk build`
-- 359 passing tests including 66 adversarial security tests
+- 377 passing tests including 66 adversarial security tests
+
+Tested against real production frameworks: Express (70 deps), Fastify (46 deps), Flask (15 deps), litellm (60+ deps), and mixed JS+Python monorepos.
 
 Everything listed above runs on every `rusk install`. Use `-v` to see the full security pipeline in action.
 
