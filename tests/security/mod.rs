@@ -90,6 +90,7 @@ fn test_lockfile_tamper_detected_on_verify() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 
@@ -102,6 +103,7 @@ fn test_lockfile_tamper_detected_on_verify() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 
@@ -155,6 +157,7 @@ fn test_artifact_substitution_caught() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 

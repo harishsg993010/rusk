@@ -115,6 +115,7 @@ mod tests {
             dependencies: vec![],
             dev: false,
             signer: None,
+            provenance: None,
             resolved_by: None,
         });
         lf.add_package(LockedPackage {
@@ -126,6 +127,7 @@ mod tests {
             dependencies: vec![],
             dev: false,
             signer: None,
+            provenance: None,
             resolved_by: None,
         });
         lf

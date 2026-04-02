@@ -898,6 +898,7 @@ fn test_lockfile_tamper_detected() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 
@@ -934,6 +935,7 @@ fn test_lockfile_integrity_deterministic() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     };
 
@@ -972,6 +974,7 @@ fn test_lockfile_diff_detects_version_change() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     };
 
@@ -1005,6 +1008,7 @@ fn test_lockfile_diff_detects_added_package() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 
@@ -1018,6 +1022,7 @@ fn test_lockfile_diff_detects_added_package() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
     new.add_package(LockedPackage {
@@ -1029,6 +1034,7 @@ fn test_lockfile_diff_detects_added_package() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 
@@ -1059,6 +1065,7 @@ fn test_lockfile_diff_detects_removed_package() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
     old.add_package(LockedPackage {
@@ -1070,6 +1077,7 @@ fn test_lockfile_diff_detects_removed_package() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 
@@ -1084,6 +1092,7 @@ fn test_lockfile_diff_detects_removed_package() {
         dependencies: vec![],
         dev: false,
         signer: None,
+        provenance: None,
         resolved_by: None,
     });
 

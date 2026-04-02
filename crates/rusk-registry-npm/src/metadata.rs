@@ -324,6 +324,7 @@ mod tests {
             engines: None,
             deprecated: Some("Use new-pkg instead".to_string()),
             has_install_script: None,
+            _extra: HashMap::new(),
         };
         assert!(meta.is_deprecated());
     }

@@ -189,6 +189,7 @@ mod tests {
             dependencies: vec![],
             dev: false,
             signer: None,
+            provenance: None,
             resolved_by: None,
         }
     }
