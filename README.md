@@ -12,33 +12,9 @@
 
 rusk handles both JavaScript and Python packages from a single tool, while verifying every artifact before it touches your project. It's fast, it's strict about security by default, and it doesn't make you choose between safety and speed.
 
-## Why rusk?
+### Works with existing projects. No config file needed.
 
-Every existing package manager trusts the registry. npm trusts npmjs.org. pip trusts PyPI. If someone compromises a registry, pushes a malicious update, or swaps a tarball on a CDN, your package manager will happily install it.
-
-rusk doesn't trust anyone. Every package goes through:
-
-- **SHA-256 digest verification** before anything gets written to disk
-- **Content-addressed storage** so the same bytes always produce the same hash
-- **Lockfile pinning** of the entire transitive closure with digests
-- **Signature and provenance policy** that you control
-- **Tamper detection** that catches corrupted or modified packages
-
-And it does all of this while being faster than npm and competitive with bun and uv.
-
-## Quick start
-
-```bash
-# Build from source (requires Rust 1.75+)
-cargo build --release -p rusk-cli
-cp target/release/rusk /usr/local/bin/
-
-# Or download the binary from GitHub releases
-```
-
-### Drop into any existing project
-
-rusk auto-detects `package.json`, `requirements.txt`, and `pyproject.toml`. No config file needed.
+rusk auto-detects `package.json`, `requirements.txt`, and `pyproject.toml`. Drop it into any project you already have.
 
 ```bash
 cd my-express-app/       # has package.json
@@ -51,7 +27,73 @@ cd my-modern-lib/        # has pyproject.toml
 rusk install             # just works
 ```
 
-### Or start fresh
+### Install, verify, and understand in three commands
+
+```bash
+$ rusk install
+Installed 70 packages (70 cached) in 1.0s
+
+$ rusk audit --strict
+Verified 70/70 packages: 70 passed, 0 failed
+
+$ rusk explain express --trace
+Package: express@4.21.2
+Digest: sha256:7b75c105719...
+Policy evaluation:
+  + npm ECDSA signature verified
+  + Package has valid digest
+Verdict: ALLOW - package is trusted
+```
+
+## Why rusk?
+
+Most package managers ultimately trust the registry response and artifact served at install time. If someone compromises a registry, pushes a malicious update, or swaps a tarball on a CDN, your package manager will happily install it.
+
+rusk doesn't trust anyone. Every package goes through:
+
+- **SHA-256 digest verification** before anything gets written to disk
+- **Content-addressed storage** so the same bytes always produce the same hash
+- **Lockfile pinning** of the entire transitive closure with digests
+- **Signature and provenance policy** that you control
+- **Tamper detection** that catches corrupted or modified packages
+
+And it does all of this while being faster than npm and competitive with bun and uv.
+
+## Speed
+
+Benchmarked against real package managers on express@^4.21.0 (70 transitive dependencies):
+
+### JavaScript (vs bun and npm)
+
+| Scenario | rusk | bun | npm |
+|----------|------|-----|-----|
+| Cold install | 5.1s | 2.7s | 6.3s |
+| Warm cache | 1.0s | 1.9s | 4.7s |
+| No-op | 0.17s | 1.7s | 4.8s |
+
+### Python (vs uv)
+
+| Scenario | rusk | uv |
+|----------|------|----|
+| Cold install | 1.4s | 0.2s |
+| Warm cache | 0.14s | 0.27s |
+| No-op | 0.20s | 0.27s |
+
+rusk is faster than bun on warm installs and no-ops. Faster than uv on warm and no-op. And it's doing more work — verifying digests, checking CAS integrity, computing lockfile hashes — on every single run.
+
+The cold install gap comes down to network optimization. bun and uv have had years to optimize their HTTP stacks. rusk's cold path will get faster.
+
+## Quick start
+
+```bash
+# Build from source (requires Rust 1.75+)
+cargo build --release -p rusk-cli
+cp target/release/rusk /usr/local/bin/
+
+# Or download the binary from GitHub releases
+```
+
+### Start a new project
 
 ```bash
 rusk init --ecosystem js --name my-app
@@ -197,7 +239,23 @@ Full evaluation trace:
   6. Final verdict: ALLOW
 ```
 
-## Real-world attack: how rusk would have stopped the litellm compromise
+## All commands
+
+| Command | What it does |
+|---------|-------------|
+| `rusk install` | Resolve, download, verify, and install packages |
+| `rusk add <pkg>` | Add a package to the manifest and install it |
+| `rusk init` | Create a new project with `rusk.toml` |
+| `rusk verify` | Check installed packages match lockfile digests |
+| `rusk audit` | Evaluate trust policy across all dependencies |
+| `rusk explain <pkg>` | Show why a package was allowed or blocked |
+| `rusk update` | Re-resolve and update the lockfile |
+| `rusk gc` | Clean up unreferenced blobs from the cache |
+| `rusk config` | View or modify rusk configuration |
+| `rusk build` | Run build scripts in a sandbox |
+| `rusk publish` | Validate and publish a package |
+
+## Case study: how rusk would have stopped the litellm compromise
 
 On March 24, 2026, a threat actor called TeamPCP published `litellm` versions 1.82.7 and 1.82.8 to PyPI. They got in by first compromising Trivy (an open-source security scanner) through a poisoned GitHub Action, which gave them access to LiteLLM's CI/CD pipeline and ultimately the maintainer's PyPI credentials.
 
@@ -277,46 +335,6 @@ The litellm compromise was a cascading supply-chain attack: Trivy compromised fi
 5. Build sandbox limits blast radius for install-time code execution
 
 No single layer is perfect. But stacking five layers means the attacker has to beat all of them. With pip, they had to beat zero.
-
-## All commands
-
-| Command | What it does |
-|---------|-------------|
-| `rusk install` | Resolve, download, verify, and install packages |
-| `rusk add <pkg>` | Add a package to the manifest and install it |
-| `rusk init` | Create a new project with `rusk.toml` |
-| `rusk verify` | Check installed packages match lockfile digests |
-| `rusk audit` | Evaluate trust policy across all dependencies |
-| `rusk explain <pkg>` | Show why a package was allowed or blocked |
-| `rusk update` | Re-resolve and update the lockfile |
-| `rusk gc` | Clean up unreferenced blobs from the cache |
-| `rusk config` | View or modify rusk configuration |
-| `rusk build` | Run build scripts in a sandbox |
-| `rusk publish` | Validate and publish a package |
-
-## Speed
-
-Benchmarked against real package managers on express@^4.21.0 (70 transitive dependencies):
-
-### JavaScript (vs bun and npm)
-
-| Scenario | rusk | bun | npm |
-|----------|------|-----|-----|
-| Cold install | 5.1s | 2.7s | 6.3s |
-| Warm cache | 1.0s | 1.9s | 4.7s |
-| No-op | 0.17s | 1.7s | 4.8s |
-
-### Python (vs uv)
-
-| Scenario | rusk | uv |
-|----------|------|----|
-| Cold install | 1.4s | 0.2s |
-| Warm cache | 0.14s | 0.27s |
-| No-op | 0.20s | 0.27s |
-
-rusk is faster than bun on warm installs and no-ops. Faster than uv on warm and no-op. And it's doing more work — verifying digests, checking CAS integrity, computing lockfile hashes — on every single run.
-
-The cold install gap comes down to network optimization. bun and uv have had years to optimize their HTTP stacks. rusk's cold path will get faster.
 
 ## How the cache works
 
