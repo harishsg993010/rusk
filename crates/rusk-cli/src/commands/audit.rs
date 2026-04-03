@@ -43,7 +43,12 @@ impl std::str::FromStr for AuditReportFormat {
     }
 }
 
-pub async fn run(args: AuditArgs) -> Result<()> {
+pub async fn run(args: AuditArgs, format: crate::output::OutputFormat) -> Result<()> {
+    // When the global --format json flag is set, override the per-command
+    // --report flag so that the output is always structured JSON.
+    let json_output = format == crate::output::OutputFormat::Json
+        || matches!(args.report, AuditReportFormat::Json);
+
     tracing::info!(strict = args.strict, "starting audit");
 
     let project_dir = std::env::current_dir()
@@ -54,6 +59,17 @@ pub async fn run(args: AuditArgs) -> Result<()> {
     // Load lockfile
     let lockfile_path = config.lockfile_path();
     if !lockfile_path.exists() {
+        if json_output {
+            let exit_code = rusk_core::ExitCode::LockfileMismatch;
+            let output = serde_json::json!({
+                "status": "error",
+                "exit_code": exit_code.as_i32(),
+                "exit_code_name": exit_code.code_name(),
+                "error": "rusk.lock not found",
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+            std::process::exit(exit_code.as_i32());
+        }
         crate::output::print_error("No lockfile found. Run 'rusk install' first.");
         return Err(miette::miette!("rusk.lock not found"));
     }
@@ -76,7 +92,11 @@ pub async fn run(args: AuditArgs) -> Result<()> {
 
     let trust_config = manifest.as_ref().and_then(|m| m.trust.as_ref());
 
-    let spinner = crate::output::create_spinner("Auditing dependency tree...");
+    let spinner = if json_output {
+        indicatif::ProgressBar::hidden()
+    } else {
+        crate::output::create_spinner("Auditing dependency tree...")
+    };
 
     let mut total = 0usize;
     let mut issues: Vec<AuditIssue> = Vec::new();
@@ -112,7 +132,45 @@ pub async fn run(args: AuditArgs) -> Result<()> {
 
     spinner.finish_and_clear();
 
-    // Print results based on format
+    // JSON output path (either --format json or --report json)
+    if json_output {
+        let has_issues = !issues.is_empty();
+        let exit_code = if has_issues && args.strict {
+            rusk_core::ExitCode::AuditFailed
+        } else {
+            rusk_core::ExitCode::Success
+        };
+
+        let json_issues: Vec<serde_json::Value> = issues
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "package": i.package,
+                    "version": i.version,
+                    "severity": i.severity,
+                    "message": i.message,
+                    "remediation": i.remediation,
+                })
+            })
+            .collect();
+
+        let output = serde_json::json!({
+            "status": if has_issues && args.strict { "error" } else { "success" },
+            "exit_code": exit_code.as_i32(),
+            "exit_code_name": exit_code.code_name(),
+            "total": total,
+            "issues_count": issues.len(),
+            "issues": json_issues,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+
+        if has_issues && args.strict {
+            std::process::exit(exit_code.as_i32());
+        }
+        return Ok(());
+    }
+
+    // Human-readable output
     match args.report {
         AuditReportFormat::Summary => {
             crate::output::print_info(&format!("Audited {total} packages"));
@@ -149,23 +207,8 @@ pub async fn run(args: AuditArgs) -> Result<()> {
             }
         }
         AuditReportFormat::Json => {
-            let json_issues: Vec<serde_json::Value> = issues
-                .iter()
-                .map(|i| {
-                    serde_json::json!({
-                        "package": i.package,
-                        "version": i.version,
-                        "severity": i.severity,
-                        "message": i.message,
-                        "remediation": i.remediation,
-                    })
-                })
-                .collect();
-            let output = serde_json::json!({
-                "total": total,
-                "issues": json_issues,
-            });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+            // Already handled above since json_output == true
+            unreachable!();
         }
     }
 

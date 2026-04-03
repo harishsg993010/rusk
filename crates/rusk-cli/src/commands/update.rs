@@ -51,7 +51,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
             lockfile_only: false,
             packages: vec![],
         };
-        return super::install::run(install_args).await;
+        return super::install::run(install_args, crate::output::OutputFormat::Text).await;
     }
 
     if args.dry_run {
@@ -87,7 +87,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
                 lockfile_only: false,
                 packages: vec![],
             };
-            return super::install::run(install_args).await;
+            return super::install::run(install_args, crate::output::OutputFormat::Text).await;
         }
     } else {
         let target_names: Vec<&str> = args.packages.iter().map(|s| s.as_str()).collect();
@@ -109,7 +109,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
                 lockfile_only: false,
                 packages: vec![],
             };
-            return super::install::run(install_args).await;
+            return super::install::run(install_args, crate::output::OutputFormat::Text).await;
         }
     }
 

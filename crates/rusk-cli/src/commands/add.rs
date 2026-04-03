@@ -74,7 +74,7 @@ pub async fn run(args: AddArgs) -> Result<()> {
         lockfile_only: false,
         packages: vec![],
     };
-    super::install::run(install_args).await
+    super::install::run(install_args, crate::output::OutputFormat::Text).await
 }
 
 fn add_to_rusk_toml(path: &PathBuf, args: &AddArgs) -> Result<()> {

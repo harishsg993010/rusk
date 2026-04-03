@@ -156,6 +156,9 @@ pub struct TrustConfig {
     /// Quarantine duration for new packages (in hours).
     #[serde(default)]
     pub quarantine_hours: Option<u64>,
+    /// URL to POST anomaly reports to (Slack webhook, PagerDuty, custom endpoint).
+    #[serde(default)]
+    pub report_url: Option<String>,
 }
 
 /// Registry configuration.

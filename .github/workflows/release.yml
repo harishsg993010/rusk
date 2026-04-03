@@ -60,17 +60,42 @@ jobs:
         run: |
           cp target/${{ matrix.target }}/release/rusk ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/cargo-rusk cargo-${{ matrix.artifact }}
+          chmod +x cargo-${{ matrix.artifact }}
 
       - name: Package binary (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Copy-Item "target/${{ matrix.target }}/release/rusk.exe" "${{ matrix.artifact }}"
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/rusk.exe" "${{ matrix.artifact }}"
+          $cargoArtifact = "cargo-" + "${{ matrix.artifact }}"
+          Copy-Item "target/${{ matrix.target }}/release/cargo-rusk.exe" "$cargoArtifact"
+
+      - name: Sign binary
+        if: runner.os != 'Windows'
+        run: |
+          sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+          sha256sum cargo-${{ matrix.artifact }} > cargo-${{ matrix.artifact }}.sha256
+          echo "SHA256: $(cat ${{ matrix.artifact }}.sha256)"
+
+      - name: Sign binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "${{ matrix.artifact }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}" | Out-File -Encoding ascii "${{ matrix.artifact }}.sha256"
+          $cargoArtifact = "cargo-" + "${{ matrix.artifact }}"
+          $cargoHash = (Get-FileHash "$cargoArtifact" -Algorithm SHA256).Hash.ToLower()
+          "$cargoHash  $cargoArtifact" | Out-File -Encoding ascii "$cargoArtifact.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            cargo-${{ matrix.artifact }}*
+            ${{ matrix.artifact }}.sha256
 
   release:
     needs: build
@@ -91,7 +116,7 @@ jobs:
             cp "$dir"* ../
           done
           cd ..
-          sha256sum rusk-* > checksums-sha256.txt
+          sha256sum rusk-* cargo-rusk-* > checksums-sha256.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -104,4 +129,10 @@ jobs:
             rusk-Darwin-aarch64
             rusk-Windows-x86_64.exe
             rusk-Windows-aarch64.exe
+            cargo-rusk-Linux-x86_64
+            cargo-rusk-Linux-aarch64
+            cargo-rusk-Darwin-x86_64
+            cargo-rusk-Darwin-aarch64
+            cargo-rusk-Windows-x86_64.exe
+            cargo-rusk-Windows-aarch64.exe
             checksums-sha256.txt

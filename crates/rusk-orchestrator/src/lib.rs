@@ -12,6 +12,7 @@ pub mod build;
 pub mod publish;
 pub mod explain;
 pub mod config;
+pub mod reporting;
 
 pub use install::{run_install, InstallResult, InstallError};
 pub use update::UpdateResult;

@@ -5,10 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Command-line interface for rusk package manager"
+categories = ["command-line-utilities", "development-tools"]
+keywords = ["package-manager", "security", "supply-chain", "npm", "pypi"]
+readme = "../../README.md"
+repository = "https://github.com/harishsg993010/rusk"
 
 [[bin]]
 name = "rusk"
 path = "src/main.rs"
+
+[[bin]]
+name = "cargo-rusk"
+path = "src/cargo_main.rs"
 
 [dependencies]
 rusk-orchestrator = { workspace = true }

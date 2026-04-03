@@ -22,7 +22,9 @@ pub struct VerifyArgs {
     pub detailed: bool,
 }
 
-pub async fn run(args: VerifyArgs) -> Result<()> {
+pub async fn run(args: VerifyArgs, format: crate::output::OutputFormat) -> Result<()> {
+    let json_output = format == crate::output::OutputFormat::Json;
+
     tracing::info!(
         packages = ?args.packages,
         strict = args.strict,
@@ -37,6 +39,17 @@ pub async fn run(args: VerifyArgs) -> Result<()> {
     // Load lockfile
     let lockfile_path = config.lockfile_path();
     if !lockfile_path.exists() {
+        if json_output {
+            let exit_code = rusk_core::ExitCode::LockfileMismatch;
+            let output = serde_json::json!({
+                "status": "error",
+                "exit_code": exit_code.as_i32(),
+                "exit_code_name": exit_code.code_name(),
+                "error": "rusk.lock not found",
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+            std::process::exit(exit_code.as_i32());
+        }
         crate::output::print_error("No lockfile found. Run 'rusk install' first.");
         return Err(miette::miette!("rusk.lock not found"));
     }
@@ -49,7 +62,11 @@ pub async fn run(args: VerifyArgs) -> Result<()> {
     let state = rusk_materialize::InstallState::load(&state_path)
         .map_err(|e| miette::miette!("failed to load install state: {}", e))?;
 
-    let spinner = crate::output::create_spinner("Verifying installed packages...");
+    let spinner = if json_output {
+        indicatif::ProgressBar::hidden()
+    } else {
+        crate::output::create_spinner("Verifying installed packages...")
+    };
 
     let mut verified = 0usize;
     let mut failed = 0usize;
@@ -76,7 +93,7 @@ pub async fn run(args: VerifyArgs) -> Result<()> {
             if let Some(installed) = state.packages.get(canonical_id) {
                 if installed.digest == locked_pkg.digest {
                     verified += 1;
-                    if args.detailed {
+                    if !json_output && args.detailed {
                         crate::output::print_info(&format!(
                             "  OK  {}@{} ({})",
                             pkg_name, locked_pkg.version, locked_pkg.digest
@@ -92,7 +109,7 @@ pub async fn run(args: VerifyArgs) -> Result<()> {
                 }
             } else {
                 warnings += 1;
-                if args.detailed {
+                if !json_output && args.detailed {
                     crate::output::print_warning(&format!(
                         "{}@{}: not in install state (may not be materialized)",
                         pkg_name, locked_pkg.version
@@ -111,8 +128,33 @@ pub async fn run(args: VerifyArgs) -> Result<()> {
 
     spinner.finish_and_clear();
 
-    // Print results
     let total = verified + failed + warnings;
+
+    if json_output {
+        let has_failures = failed > 0;
+        let exit_code = if has_failures {
+            rusk_core::ExitCode::VerificationFailed
+        } else {
+            rusk_core::ExitCode::Success
+        };
+        let output = serde_json::json!({
+            "status": if has_failures { "error" } else { "success" },
+            "exit_code": exit_code.as_i32(),
+            "exit_code_name": exit_code.code_name(),
+            "total": total,
+            "verified": verified,
+            "failed": failed,
+            "warnings": warnings,
+            "failures": failures,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        if has_failures && args.strict {
+            std::process::exit(exit_code.as_i32());
+        }
+        return Ok(());
+    }
+
+    // Human-readable output
     crate::output::print_info(&format!(
         "Verified {verified}/{total} packages: {verified} passed, {failed} failed, {warnings} warnings"
     ));

@@ -4,6 +4,7 @@
 //! download -> materialize -> update lockfile -> update state.
 
 use crate::config::OrchestratorConfig;
+use crate::reporting::{self, AnomalyReport, AnomalyType, Severity};
 use rusk_cas::CasStore;
 use rusk_core::{Ecosystem, PackageId, Sha256Digest, Version};
 use rusk_lockfile::schema::{LockedPackage, Lockfile};
@@ -52,6 +53,26 @@ pub enum InstallError {
     LockfileError(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl InstallError {
+    /// Map this error to a structured exit code for CI integration.
+    pub fn exit_code(&self) -> rusk_core::ExitCode {
+        match self {
+            InstallError::ManifestNotFound(_) | InstallError::ManifestParse(_) => {
+                rusk_core::ExitCode::ManifestError
+            }
+            InstallError::ResolutionFailed(_) => rusk_core::ExitCode::ResolutionFailed,
+            InstallError::DownloadFailed(_) => rusk_core::ExitCode::DownloadFailed,
+            InstallError::MaterializationFailed(_) => {
+                rusk_core::ExitCode::MaterializationFailed
+            }
+            InstallError::PolicyViolation(_) => rusk_core::ExitCode::PolicyDenied,
+            InstallError::FrozenMismatch => rusk_core::ExitCode::LockfileMismatch,
+            InstallError::LockfileError(_) => rusk_core::ExitCode::LockfileMismatch,
+            InstallError::Io(_) => rusk_core::ExitCode::GeneralError,
+        }
+    }
 }
 
 /// Result of a successful install.
@@ -460,10 +481,12 @@ pub async fn run_install(
     let revocation_checker = RevocationChecker::new(&revocation_state);
     let sig_cache = SignatureCache::new(1000, revocation_state.epoch);
     let trust_config = manifest.trust.as_ref();
+    let report_url = trust_config.and_then(|tc| tc.report_url.clone());
 
     info!(
         revocation_epoch = revocation_state.epoch,
         total_revocations = revocation_state.total_revocations(),
+        report_url = report_url.as_deref().unwrap_or("none"),
         "security subsystems initialized"
     );
 
@@ -981,6 +1004,19 @@ pub async fn run_install(
         // Check artifact revocation
         let artifact_result = revocation_checker.check_artifact(&digest);
         if artifact_result.is_revoked() {
+            if let Some(ref url) = report_url {
+                let report = AnomalyReport {
+                    timestamp: chrono::Utc::now(),
+                    project: config.project_dir.display().to_string(),
+                    anomaly_type: AnomalyType::RevocationHit,
+                    package: pkg_name.clone(),
+                    version: rp.version.to_string(),
+                    detail: format!("artifact has been revoked (digest {})", digest),
+                    severity: Severity::Critical,
+                    hostname: reporting::get_hostname(),
+                };
+                tokio::spawn(reporting::report_anomaly(url.clone(), report));
+            }
             return Err(InstallError::PolicyViolation(
                 format!("{pkg_name}@{}: artifact has been revoked (digest {})", rp.version, digest)
             ));
@@ -994,6 +1030,19 @@ pub async fn run_install(
             &version_str,
         );
         if version_result.is_revoked() {
+            if let Some(ref url) = report_url {
+                let report = AnomalyReport {
+                    timestamp: chrono::Utc::now(),
+                    project: config.project_dir.display().to_string(),
+                    anomaly_type: AnomalyType::RevocationHit,
+                    package: pkg_name.clone(),
+                    version: rp.version.to_string(),
+                    detail: "package version has been revoked".to_string(),
+                    severity: Severity::Critical,
+                    hostname: reporting::get_hostname(),
+                };
+                tokio::spawn(reporting::report_anomaly(url.clone(), report));
+            }
             return Err(InstallError::PolicyViolation(
                 format!("{pkg_name}@{}: package version has been revoked", rp.version)
             ));
@@ -1040,6 +1089,19 @@ pub async fn run_install(
             // violation.
             if let Some(tc) = trust_config {
                 if tc.require_signatures && !any_valid {
+                    if let Some(ref url) = report_url {
+                        let report = AnomalyReport {
+                            timestamp: chrono::Utc::now(),
+                            project: config.project_dir.display().to_string(),
+                            anomaly_type: AnomalyType::SignatureInvalid,
+                            package: pkg_name.clone(),
+                            version: rp.version.to_string(),
+                            detail: "signatures present but none verified successfully".to_string(),
+                            severity: Severity::High,
+                            hostname: reporting::get_hostname(),
+                        };
+                        tokio::spawn(reporting::report_anomaly(url.clone(), report));
+                    }
                     return Err(InstallError::PolicyViolation(format!(
                         "{pkg_name}@{}: no valid npm signature found",
                         rp.version
@@ -1063,6 +1125,19 @@ pub async fn run_install(
                             version = %rp.version,
                             "signature verification required but package has no signatures"
                         );
+                    }
+                    if let Some(ref url) = report_url {
+                        let report = AnomalyReport {
+                            timestamp: chrono::Utc::now(),
+                            project: config.project_dir.display().to_string(),
+                            anomaly_type: AnomalyType::SignatureMissing,
+                            package: pkg_name.clone(),
+                            version: rp.version.to_string(),
+                            detail: "signature verification required but package has no signatures".to_string(),
+                            severity: Severity::High,
+                            hostname: reporting::get_hostname(),
+                        };
+                        tokio::spawn(reporting::report_anomaly(url.clone(), report));
                     }
                 }
                 // Check the legacy signature cache as fallback
@@ -1266,6 +1341,19 @@ pub async fn run_install(
 
             // Security check: CAS blob must exist for this digest
             if !cas.contains(&digest) {
+                if let Some(ref url) = report_url {
+                    let report = AnomalyReport {
+                        timestamp: chrono::Utc::now(),
+                        project: config.project_dir.display().to_string(),
+                        anomaly_type: AnomalyType::CasCorruption,
+                        package: pkg_name.clone(),
+                        version: rp.version.to_string(),
+                        detail: format!("CAS blob not found for digest {}", digest),
+                        severity: Severity::Critical,
+                        hostname: reporting::get_hostname(),
+                    };
+                    tokio::spawn(reporting::report_anomaly(url.clone(), report));
+                }
                 return Err(InstallError::MaterializationFailed(
                     format!(
                         "CAS integrity check failed for {pkg_name}@{}: blob not found for digest {}",
@@ -1346,6 +1434,19 @@ pub async fn run_install(
 
             // Security check: CAS blob must exist for this digest
             if !cas.contains(&digest) {
+                if let Some(ref url) = report_url {
+                    let report = AnomalyReport {
+                        timestamp: chrono::Utc::now(),
+                        project: config.project_dir.display().to_string(),
+                        anomaly_type: AnomalyType::CasCorruption,
+                        package: pkg_name.clone(),
+                        version: rp.version.to_string(),
+                        detail: format!("CAS blob not found for digest {}", digest),
+                        severity: Severity::Critical,
+                        hostname: reporting::get_hostname(),
+                    };
+                    tokio::spawn(reporting::report_anomaly(url.clone(), report));
+                }
                 return Err(InstallError::MaterializationFailed(
                     format!(
                         "CAS integrity check failed for {pkg_name}@{}: blob not found for digest {}",
@@ -1445,8 +1546,11 @@ pub async fn run_install(
         if let Some(ref old_lf) = old_lockfile {
             let canonical = rp.package_id.canonical();
             if let Some(old_pkg) = old_lf.packages.get(&canonical) {
-                detect_provenance_change(&rp.package_id.display_name(), &rp.version.to_string(),
-                    old_pkg.provenance.as_ref(), provenance.as_ref(), &emit);
+                detect_provenance_change(
+                    &rp.package_id.display_name(), &rp.version.to_string(),
+                    old_pkg.provenance.as_ref(), provenance.as_ref(), &emit,
+                    report_url.as_deref(), &config.project_dir.display().to_string(),
+                );
             }
         }
 
@@ -1476,8 +1580,11 @@ pub async fn run_install(
         if let Some(ref old_lf) = old_lockfile {
             let canonical = rp.package_id.canonical();
             if let Some(old_pkg) = old_lf.packages.get(&canonical) {
-                detect_provenance_change(&rp.package_id.display_name(), &rp.version.to_string(),
-                    old_pkg.provenance.as_ref(), provenance.as_ref(), &emit);
+                detect_provenance_change(
+                    &rp.package_id.display_name(), &rp.version.to_string(),
+                    old_pkg.provenance.as_ref(), provenance.as_ref(), &emit,
+                    report_url.as_deref(), &config.project_dir.display().to_string(),
+                );
             }
         }
 
@@ -1643,6 +1750,8 @@ fn detect_provenance_change(
     old: Option<&rusk_lockfile::schema::LockedProvenance>,
     new: Option<&rusk_lockfile::schema::LockedProvenance>,
     emit: &dyn Fn(&str),
+    report_url: Option<&str>,
+    project: &str,
 ) {
     match (old, new) {
         (Some(old_prov), None) => {
@@ -1659,8 +1768,28 @@ fn detect_provenance_change(
                 old_prov.publisher_kind,
                 old_prov.repository.as_deref().unwrap_or("unknown")
             ));
+            if let Some(url) = report_url {
+                let report = AnomalyReport {
+                    timestamp: chrono::Utc::now(),
+                    project: project.to_string(),
+                    anomaly_type: AnomalyType::ProvenanceDropped,
+                    package: pkg_name.to_string(),
+                    version: version.to_string(),
+                    detail: format!(
+                        "package previously had attestation ({} from {}) but update does not",
+                        old_prov.publisher_kind,
+                        old_prov.repository.as_deref().unwrap_or("unknown")
+                    ),
+                    severity: Severity::Critical,
+                    hostname: reporting::get_hostname(),
+                };
+                tokio::spawn(reporting::report_anomaly(url.to_string(), report));
+            }
         }
         (Some(old_prov), Some(new_prov)) => {
+            let mut changed = false;
+            let mut details = Vec::new();
+
             // Check for publisher change
             if old_prov.publisher_kind != new_prov.publisher_kind {
                 warn!(
@@ -1674,6 +1803,11 @@ fn detect_provenance_change(
                     "  SECURITY: {pkg_name}@{version} — publisher changed ({} -> {})",
                     old_prov.publisher_kind, new_prov.publisher_kind
                 ));
+                details.push(format!(
+                    "publisher changed ({} -> {})",
+                    old_prov.publisher_kind, new_prov.publisher_kind
+                ));
+                changed = true;
             }
             // Check for repository change
             if old_prov.repository != new_prov.repository {
@@ -1689,6 +1823,12 @@ fn detect_provenance_change(
                     old_prov.repository.as_deref().unwrap_or("none"),
                     new_prov.repository.as_deref().unwrap_or("none")
                 ));
+                details.push(format!(
+                    "source repo changed ({} -> {})",
+                    old_prov.repository.as_deref().unwrap_or("none"),
+                    new_prov.repository.as_deref().unwrap_or("none")
+                ));
+                changed = true;
             }
             // Check for workflow change
             if old_prov.workflow != new_prov.workflow {
@@ -1704,6 +1844,28 @@ fn detect_provenance_change(
                     old_prov.workflow.as_deref().unwrap_or("none"),
                     new_prov.workflow.as_deref().unwrap_or("none")
                 ));
+                details.push(format!(
+                    "workflow changed ({} -> {})",
+                    old_prov.workflow.as_deref().unwrap_or("none"),
+                    new_prov.workflow.as_deref().unwrap_or("none")
+                ));
+                changed = true;
+            }
+
+            if changed {
+                if let Some(url) = report_url {
+                    let report = AnomalyReport {
+                        timestamp: chrono::Utc::now(),
+                        project: project.to_string(),
+                        anomaly_type: AnomalyType::ProvenanceChanged,
+                        package: pkg_name.to_string(),
+                        version: version.to_string(),
+                        detail: details.join("; "),
+                        severity: Severity::High,
+                        hostname: reporting::get_hostname(),
+                    };
+                    tokio::spawn(reporting::report_anomaly(url.to_string(), report));
+                }
             }
         }
         (None, Some(_new_prov)) => {

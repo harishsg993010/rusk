@@ -8,7 +8,6 @@ mod commands;
 mod output;
 
 use clap::Parser;
-use miette::Result;
 use tracing::info;
 
 /// rusk -- a trust-aware, supply-chain-hardened package manager.
@@ -32,8 +31,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<std::path::PathBuf>,
 
+    /// Print all structured exit codes and exit.
+    #[arg(long, global = true)]
+    pub exit_codes: bool,
+
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 /// Top-level subcommands.
@@ -64,8 +67,24 @@ pub enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let cli = Cli::parse();
+
+    // Handle --exit-codes before anything else.
+    if cli.exit_codes {
+        output::print_exit_codes(cli.format);
+        std::process::exit(0);
+    }
+
+    // A subcommand is required unless --exit-codes was passed.
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // Re-parse to trigger clap's "missing subcommand" error message.
+            let _ = Cli::parse_from(["rusk", "--help"]);
+            std::process::exit(1);
+        }
+    };
 
     // Initialize observability based on verbosity.
     let tracing_config = rusk_observability::TracingConfig {
@@ -85,11 +104,13 @@ async fn main() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "rusk starting");
 
-    match cli.command {
-        Commands::Install(args) => commands::install::run(args).await,
+    let fmt = cli.format;
+
+    let result = match command {
+        Commands::Install(args) => commands::install::run(args, fmt).await,
         Commands::Update(args) => commands::update::run(args).await,
-        Commands::Verify(args) => commands::verify::run(args).await,
-        Commands::Audit(args) => commands::audit::run(args).await,
+        Commands::Verify(args) => commands::verify::run(args, fmt).await,
+        Commands::Audit(args) => commands::audit::run(args, fmt).await,
         Commands::Build(args) => commands::build::run(args).await,
         Commands::Publish(args) => commands::publish::run(args).await,
         Commands::Explain(args) => commands::explain::run(args).await,
@@ -97,5 +118,15 @@ async fn main() -> Result<()> {
         Commands::Init(args) => commands::init::run(args).await,
         Commands::Config(args) => commands::config::run(args).await,
         Commands::Add(args) => commands::add::run(args).await,
+    };
+
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            // miette errors already printed by the command handlers;
+            // just extract the exit code and terminate.
+            eprintln!("{e:?}");
+            std::process::exit(1);
+        }
     }
 }

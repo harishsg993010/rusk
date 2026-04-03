@@ -85,3 +85,44 @@ pub fn create_spinner(message: &str) -> indicatif::ProgressBar {
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb
 }
+
+/// Print all structured exit codes.
+///
+/// Called when `rusk --exit-codes` is passed. Output respects the global
+/// `--format` flag (text table or JSON array).
+pub fn print_exit_codes(format: OutputFormat) {
+    use rusk_core::ExitCode;
+
+    let codes = ExitCode::all();
+
+    match format {
+        OutputFormat::Text => {
+            println!("{:<6} {:<26} {}", "CODE", "NAME", "DESCRIPTION");
+            println!("{}", "-".repeat(70));
+            for code in codes {
+                println!(
+                    "{:<6} {:<26} {}",
+                    code.as_i32(),
+                    code.code_name(),
+                    code.description(),
+                );
+            }
+        }
+        OutputFormat::Json => {
+            let entries: Vec<serde_json::Value> = codes
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "code": c.as_i32(),
+                        "name": c.code_name(),
+                        "description": c.description(),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&entries).unwrap_or_default()
+            );
+        }
+    }
+}
