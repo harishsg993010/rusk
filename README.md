@@ -86,13 +86,19 @@ The cold install gap is network optimization. bun and uv have had years to tune 
 ## Quick start
 
 ```bash
-# Download the binary from GitHub releases (Linux/macOS, x86_64/aarch64)
+# Download the binary from GitHub releases (Linux/macOS/Windows, x86_64/aarch64)
 curl -fsSL https://github.com/harishsg993010/rusk/releases/latest/download/rusk-$(uname -s)-$(uname -m) -o rusk
 chmod +x rusk && sudo mv rusk /usr/local/bin/
 
+# Or install via cargo
+cargo install rusk-cli
+
+# Or as a cargo subcommand
+cargo install rusk-cli    # then use: cargo rusk install
+
 # Or build from source (requires Rust 1.75+)
+git clone https://github.com/harishsg993010/rusk.git && cd rusk
 cargo build --release -p rusk-cli
-cp target/release/rusk /usr/local/bin/
 ```
 
 ### Start a new project
@@ -214,7 +220,7 @@ $ rusk audit --strict
 error: audit found 2 issues
 ```
 
-Strict mode exits with code 1, so you can gate CI on it.
+Strict mode exits with a distinct exit code, so you can gate CI on it. See [CI integration](#ci-integration) for all exit codes.
 
 ### Trust explanation
 
@@ -256,6 +262,82 @@ Full evaluation trace:
 | `rusk config` | View or modify rusk configuration |
 | `rusk build` | Run build scripts in a sandbox |
 | `rusk publish` | Validate and publish a package |
+
+## CI integration
+
+rusk is built for CI pipelines. Every command returns a structured exit code and supports JSON output.
+
+### Exit codes
+
+| Code | Name | Meaning |
+|------|------|---------|
+| 0 | success | Everything passed |
+| 10 | resolution_failed | Dependency resolution error |
+| 11 | download_failed | Artifact download error |
+| 20 | policy_denied | Trust policy blocked the install |
+| 21 | signature_missing | Required signature not found |
+| 22 | provenance_dropped | Package lost its attestation |
+| 23 | revocation_hit | Package or signer was revoked |
+| 30 | cas_corruption | Content-addressed store integrity failure |
+| 31 | lockfile_mismatch | Lockfile doesn't match manifest |
+| 40 | materialization_failed | Failed to extract/link packages |
+| 50 | manifest_error | Invalid manifest file |
+| 70 | audit_failed | Audit found policy violations |
+| 71 | verification_failed | Installed packages don't match lockfile |
+
+Run `rusk --exit-codes` to print the full table. Use `rusk --exit-codes --format json` for machine-readable output.
+
+### JSON output
+
+Every command supports `--format json` for structured output:
+
+```bash
+$ rusk install --format json
+{"status":"success","exit_code":0,"resolved":70,"downloaded":0,"cached":70,"materialized":0,"elapsed_ms":170}
+
+$ rusk audit --strict --format json
+{"status":"error","exit_code":70,"total":70,"issues":[{"package":"ms","version":"2.1.3","severity":"warning","message":"package is not signed"}]}
+
+$ rusk verify --format json
+{"status":"success","total":70,"verified":70,"failed":0,"warnings":0}
+```
+
+### Anomaly reporting webhook
+
+Configure a webhook URL to get notified when rusk detects a security anomaly. Reports fire-and-forget via HTTP POST — they never block the install.
+
+```toml
+[trust]
+require_signatures = true
+require_provenance = true
+report_url = "https://hooks.slack.com/services/T.../B.../xxx"
+```
+
+rusk sends a JSON report when it detects:
+- **Provenance dropped** — package previously had attestation, update doesn't
+- **Provenance changed** — different publisher, repo, or workflow
+- **Signature missing** — required signature not found
+- **Signature invalid** — cryptographic verification failed
+- **Revocation hit** — artifact or signer has been revoked
+- **CAS corruption** — content-addressed store integrity failure
+
+```json
+{
+  "timestamp": "2026-04-03T12:00:00Z",
+  "anomaly_type": "provenance_dropped",
+  "package": "litellm",
+  "version": "1.82.8",
+  "severity": "critical",
+  "detail": "package previously had attestation but update does not",
+  "hostname": "ci-runner-07"
+}
+```
+
+Works with Slack webhooks, PagerDuty, Datadog, or any endpoint that accepts JSON.
+
+### Verifying release binaries
+
+GitHub release checksums can be modified by anyone with repo write access. rusk releases include minisign signatures for out-of-band verification. See [SECURITY.md](SECURITY.md) for the public key and verification instructions.
 
 ## Case study: how rusk would have stopped the litellm compromise
 
@@ -416,6 +498,11 @@ rusk stores provenance metadata in the lockfile. On update, it compares old vs n
 | Revocation epoch tracking | Yes | No | No | No | No |
 | Build script sandbox | Yes | No | No | No | No |
 | Auto-detect package.json/requirements.txt | Yes | N/A | N/A | N/A | N/A |
+| Structured CI exit codes | Yes (13 codes) | No | No | No | No |
+| JSON output for all commands | Yes | No | No | No | No |
+| Anomaly reporting webhook | Yes | No | No | No | No |
+| `cargo rusk` subcommand | Yes | N/A | N/A | N/A | N/A |
+| Out-of-band release signing | Yes (minisign) | No | No | No | No |
 
 ## Testing
 
@@ -466,6 +553,11 @@ What's working end-to-end:
 - Policy engine with audit, verify, and explain commands
 - Revocation checking with epoch-based cache invalidation
 - Build sandbox (process and container backends) for `rusk build`
+- Structured exit codes (13 distinct codes) for CI pipelines
+- JSON output (`--format json`) for install, verify, audit
+- Anomaly reporting webhook (fire-and-forget POST on security events)
+- `cargo rusk` subcommand support
+- Out-of-band release binary signing with minisign
 - 377 passing tests including 66 adversarial security tests
 
 Tested against real production frameworks: Express (70 deps), Fastify (46 deps), Flask (15 deps), litellm (60+ deps), and mixed JS+Python monorepos.
