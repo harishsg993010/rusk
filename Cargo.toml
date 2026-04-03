@@ -57,7 +57,7 @@ signature = "2"
 
 # Async
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 futures = "0.3"
 async-trait = "0.1"
 
