@@ -500,7 +500,14 @@ pub async fn run_install(
 
     if let Some(ref js_deps) = manifest.js_dependencies {
         emit("Resolving JavaScript dependencies...");
-        let npm_client = Arc::new(NpmRegistryClient::default_registry());
+        let npm_client = Arc::new(if let Some(ref registry_url) = js_deps.registry_url {
+            emit(&format!("Using custom registry: {registry_url}"));
+            info!(registry_url = %registry_url, "using custom npm registry");
+            NpmRegistryClient::new(rusk_core::RegistryUrl::parse(registry_url)
+                .unwrap_or_else(|_| rusk_core::RegistryUrl::npm_default()))
+        } else {
+            NpmRegistryClient::default_registry()
+        });
 
         // Seed with direct dependencies
         let all_deps = collect_js_deps(js_deps, config.include_dev);
@@ -718,7 +725,26 @@ pub async fn run_install(
     let mut py_resolved_packages: Vec<ResolvedPackage> = Vec::new();
     if let Some(ref py_deps) = manifest.python_dependencies {
         emit("Resolving Python dependencies...");
-        let pypi_client = Arc::new(PypiRegistryClient::default_registry());
+        let pypi_client = Arc::new(if let Some(ref index_url) = py_deps.index_url {
+            emit(&format!("Using custom index: {index_url}"));
+            info!(index_url = %index_url, "using custom PyPI index");
+            PypiRegistryClient::new(rusk_core::RegistryUrl::parse(index_url)
+                .unwrap_or_else(|_| rusk_core::RegistryUrl::pypi_default()))
+        } else {
+            PypiRegistryClient::default_registry()
+        });
+
+        // Build extra index clients for fallback resolution
+        let extra_index_clients: Arc<Vec<Arc<PypiRegistryClient>>> = Arc::new(
+            py_deps.extra_index_urls.iter()
+                .filter_map(|url| {
+                    rusk_core::RegistryUrl::parse(url).ok().map(|ru| {
+                        info!(extra_index = %url, "added extra PyPI index");
+                        Arc::new(PypiRegistryClient::new(ru))
+                    })
+                })
+                .collect()
+        );
 
         // Seed with direct dependencies
         let all_py_deps = collect_python_deps(py_deps, config.include_dev);
@@ -761,9 +787,24 @@ pub async fn run_install(
                 let client = pypi_client.clone();
                 let name = name.clone();
                 let version_req_str = version_req_str.clone();
+                let extra_urls = extra_index_clients.clone();
                 handles.push(tokio::spawn(async move {
                     let pkg_id = PackageId::python(&name);
                     let result = client.fetch_package_metadata(&pkg_id).await;
+                    // If not found on primary index, try extra indexes
+                    let result = match &result {
+                        Err(rusk_registry::RegistryError::PackageNotFound(_)) => {
+                            let mut found = result;
+                            for extra in extra_urls.iter() {
+                                match extra.fetch_package_metadata(&pkg_id).await {
+                                    Ok(meta) => { found = Ok(meta); break; }
+                                    Err(_) => continue,
+                                }
+                            }
+                            found
+                        }
+                        _ => result,
+                    };
                     (name, version_req_str, pkg_id, result)
                 }));
             }

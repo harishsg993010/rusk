@@ -214,6 +214,153 @@ impl PypiRegistryClient {
     }
 }
 
+impl PypiRegistryClient {
+    /// Fetch package metadata from PEP 503 Simple API (HTML format).
+    /// Used for non-PyPI indexes like download.pytorch.org.
+    pub async fn fetch_simple_api(
+        &self,
+        package: &PackageId,
+    ) -> Result<PackageMetadata, RegistryError> {
+        let normalized = package.name.replace('-', "_").to_lowercase();
+        // Try both /{name}/ and /simple/{name}/ patterns
+        let urls = vec![
+            format!("{}/{}/", self.registry_url.as_url().as_str().trim_end_matches('/'), normalized),
+            format!("{}/simple/{}/", self.registry_url.as_url().as_str().trim_end_matches('/'), normalized),
+        ];
+
+        let mut html = String::new();
+        let mut found = false;
+        for url in &urls {
+            debug!(url = %url, "trying Simple API");
+            match self.http.get(url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    html = resp.text().await.unwrap_or_default();
+                    found = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+
+        if !found {
+            return Err(RegistryError::PackageNotFound(package.name.clone()));
+        }
+
+        // Parse HTML: extract <a href="...">filename</a> links
+        let mut versions = Vec::new();
+        let mut version_metadata = HashMap::new();
+
+        for line in html.lines() {
+            // Match: <a href="URL#sha256=HASH">filename</a>
+            let href_start = match line.find("href=\"") {
+                Some(i) => i + 6,
+                None => continue,
+            };
+            let href_end = match line[href_start..].find('"') {
+                Some(i) => href_start + i,
+                None => continue,
+            };
+            let href = &line[href_start..href_end];
+
+            // Extract filename from between > and </a>
+            let name_start = match line[href_end..].find('>') {
+                Some(i) => href_end + i + 1,
+                None => continue,
+            };
+            let name_end = match line[name_start..].find('<') {
+                Some(i) => name_start + i,
+                None => continue,
+            };
+            let filename = line[name_start..name_end].trim();
+
+            if !filename.ends_with(".whl") && !filename.ends_with(".tar.gz") {
+                continue;
+            }
+
+            // Extract sha256 from href fragment
+            let sha256 = href.split("#sha256=").nth(1)
+                .and_then(|h| Sha256Digest::from_hex(h).ok());
+
+            // Parse version from filename
+            let version_str = if filename.ends_with(".whl") {
+                // wheel: name-version-python-abi-platform.whl
+                filename.split('-').nth(1).unwrap_or("").to_string()
+            } else {
+                // sdist: name-version.tar.gz
+                let base = filename.strip_suffix(".tar.gz").unwrap_or(filename);
+                base.rsplit('-').next().unwrap_or("").to_string()
+            };
+
+            // Remove any +cpu or +cu118 suffixes for version parsing
+            let clean_version = version_str.split('+').next().unwrap_or(&version_str);
+
+            let pep_version = match clean_version.parse::<pep440_rs::Version>() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let version = Version::Pep440(pep_version);
+
+            // Build download URL
+            let href_no_hash = href.split('#').next().unwrap_or(href);
+            let download_url = if href_no_hash.starts_with("http") {
+                href_no_hash.to_string()
+            } else if href_no_hash.starts_with('/') {
+                // Absolute path from domain root (e.g., /whl/cpu/torch-2.8.0.whl)
+                let base = self.registry_url.as_url();
+                format!("{}://{}{}", base.scheme(), base.host_str().unwrap_or(""), href_no_hash)
+            } else {
+                format!("{}/{}", self.registry_url.as_url().as_str().trim_end_matches('/'), href_no_hash)
+            };
+
+            let artifact_type = if filename.ends_with(".whl") {
+                ArtifactType::PythonWheel
+            } else {
+                ArtifactType::PythonSdist
+            };
+
+            let url = match url::Url::parse(&download_url) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+
+            let ver_str_full = version_str.clone();
+            let entry = version_metadata.entry(ver_str_full.clone()).or_insert_with(|| {
+                if !versions.contains(&version) {
+                    versions.push(version.clone());
+                }
+                VersionMetadata {
+                    package: package.clone(),
+                    version: version.clone(),
+                    artifacts: Vec::new(),
+                    dependencies: Vec::new(),
+                    yanked: false,
+                    yank_reason: None,
+                    published_at: None,
+                }
+            });
+
+            entry.artifacts.push(ArtifactInfo {
+                filename: filename.to_string(),
+                url,
+                sha256,
+                artifact_type,
+                size: None,
+                requires_python: None,
+            });
+        }
+
+        versions.sort();
+
+        Ok(PackageMetadata {
+            package: package.clone(),
+            description: None,
+            versions,
+            version_metadata,
+            dist_tags: HashMap::new(),
+        })
+    }
+}
+
 #[async_trait]
 impl RegistryClient for PypiRegistryClient {
     #[instrument(skip(self), fields(package = %package.name))]
@@ -221,7 +368,14 @@ impl RegistryClient for PypiRegistryClient {
         &self,
         package: &PackageId,
     ) -> Result<PackageMetadata, RegistryError> {
-        let index = self.fetch_package_json(package).await?;
+        // Try JSON API first (standard PyPI), fall back to Simple API (custom indexes)
+        let index = match self.fetch_package_json(package).await {
+            Ok(idx) => idx,
+            Err(_) => {
+                debug!(package = %package.name, "JSON API failed, trying Simple API");
+                return self.fetch_simple_api(package).await;
+            }
+        };
 
         let mut versions = Vec::new();
         let mut version_metadata = HashMap::new();

@@ -76,6 +76,9 @@ pub struct JsDependencies {
     /// Optional dependencies.
     #[serde(default)]
     pub optional_dependencies: HashMap<String, DependencyEntry>,
+    /// Primary registry URL (replaces default npmjs.org). Like npm --registry.
+    #[serde(default)]
+    pub registry_url: Option<String>,
 }
 
 /// Python dependency declarations.
@@ -93,6 +96,12 @@ pub struct PythonDependencies {
     /// Required Python version.
     #[serde(default)]
     pub requires_python: Option<String>,
+    /// Primary index URL (replaces default PyPI). Like pip --index-url.
+    #[serde(default)]
+    pub index_url: Option<String>,
+    /// Additional index URLs to search. Like pip --extra-index-url.
+    #[serde(default)]
+    pub extra_index_urls: Vec<String>,
 }
 
 /// A single dependency declaration.
