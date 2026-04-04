@@ -326,6 +326,8 @@ pub fn parse_package_json(content: &str) -> Result<Manifest, ParseError> {
 
     let mut deps: HashMap<String, DependencyEntry> = HashMap::new();
     let mut dev_deps: HashMap<String, DependencyEntry> = HashMap::new();
+    let mut peer_deps: HashMap<String, DependencyEntry> = HashMap::new();
+    let mut optional_deps: HashMap<String, DependencyEntry> = HashMap::new();
 
     if let Some(dependencies) = doc.get("dependencies").and_then(|v| v.as_object()) {
         for (dep_name, dep_val) in dependencies {
@@ -339,6 +341,22 @@ pub fn parse_package_json(content: &str) -> Result<Manifest, ParseError> {
         for (dep_name, dep_val) in dev_dependencies {
             if let Some(ver) = dep_val.as_str() {
                 dev_deps.insert(dep_name.clone(), DependencyEntry::Simple(ver.to_string()));
+            }
+        }
+    }
+
+    if let Some(peer_dependencies) = doc.get("peerDependencies").and_then(|v| v.as_object()) {
+        for (dep_name, dep_val) in peer_dependencies {
+            if let Some(ver) = dep_val.as_str() {
+                peer_deps.insert(dep_name.clone(), DependencyEntry::Simple(ver.to_string()));
+            }
+        }
+    }
+
+    if let Some(opt_dependencies) = doc.get("optionalDependencies").and_then(|v| v.as_object()) {
+        for (dep_name, dep_val) in opt_dependencies {
+            if let Some(ver) = dep_val.as_str() {
+                optional_deps.insert(dep_name.clone(), DependencyEntry::Simple(ver.to_string()));
             }
         }
     }
@@ -358,8 +376,8 @@ pub fn parse_package_json(content: &str) -> Result<Manifest, ParseError> {
         js_dependencies: Some(JsDependencies {
             dependencies: deps,
             dev_dependencies: dev_deps,
-            peer_dependencies: HashMap::new(),
-            optional_dependencies: HashMap::new(),
+            peer_dependencies: peer_deps,
+            optional_dependencies: optional_deps,
             registry_url: None,
         }),
         python_dependencies: None,
@@ -368,6 +386,187 @@ pub fn parse_package_json(content: &str) -> Result<Manifest, ParseError> {
         workspace: None,
         build: None,
     })
+}
+
+// ────────────────────────────────────────────────────────────────
+// Lockfile migration parsers
+// ────────────────────────────────────────────────────────────────
+
+/// Parse npm's `package-lock.json` (lockfileVersion 2+) and extract
+/// package name/version pairs.
+///
+/// Reads the `packages` object first (v2/v3); falls back to the
+/// v1 `dependencies` object if `packages` is absent.
+pub fn parse_package_lock_json(content: &str) -> Result<Vec<(String, String)>, ParseError> {
+    let doc: serde_json::Value = serde_json::from_str(content)?;
+    let mut result: Vec<(String, String)> = Vec::new();
+
+    // lockfileVersion 2/3: "packages" keyed by path ("node_modules/foo")
+    if let Some(packages) = doc.get("packages").and_then(|v| v.as_object()) {
+        for (key, meta) in packages {
+            // Skip the root entry (empty key = project itself)
+            if key.is_empty() {
+                continue;
+            }
+            // Key looks like "node_modules/@scope/foo" or "node_modules/foo"
+            let name = key
+                .rsplit("node_modules/")
+                .next()
+                .unwrap_or(key)
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(version) = meta.get("version").and_then(|v| v.as_str()) {
+                result.push((name, version.to_string()));
+            }
+        }
+    }
+
+    // Fallback: lockfileVersion 1 "dependencies" object
+    if result.is_empty() {
+        if let Some(deps) = doc.get("dependencies").and_then(|v| v.as_object()) {
+            fn collect_v1_deps(
+                obj: &serde_json::Map<String, serde_json::Value>,
+                out: &mut Vec<(String, String)>,
+            ) {
+                for (name, meta) in obj {
+                    if let Some(version) = meta.get("version").and_then(|v| v.as_str()) {
+                        out.push((name.clone(), version.to_string()));
+                    }
+                    // Nested dependencies (hoisting quirk in v1)
+                    if let Some(nested) = meta.get("dependencies").and_then(|v| v.as_object()) {
+                        collect_v1_deps(nested, out);
+                    }
+                }
+            }
+            collect_v1_deps(deps, &mut result);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Parse a yarn.lock file (v1 classic format) and extract package name/version pairs.
+///
+/// Entries look like:
+/// ```text
+/// "express@^4.18.0":
+///   version "4.18.2"
+///   resolved "https://..."
+///   integrity sha512-...
+/// ```
+///
+/// We extract the package name from the header and the version from the
+/// indented `version "X.Y.Z"` line.
+pub fn parse_yarn_lock(content: &str) -> Result<Vec<(String, String)>, ParseError> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    let mut current_name: Option<String> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Skip comments and blank lines
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            current_name = None;
+            continue;
+        }
+
+        // Header line: "pkg@^1.0.0", "pkg@^1.0.0, pkg@~1.0.0":
+        // Not indented, may end with ':'
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            // Strip surrounding quotes and trailing colon
+            let clean = trimmed.trim_end_matches(':');
+            // Take the first spec (before any comma)
+            let first_spec = clean.split(',').next().unwrap_or(clean).trim();
+            let first_spec = first_spec.trim_matches('"');
+            // Extract name: everything before the last '@' (scoped packages have two '@')
+            if let Some(at_pos) = first_spec.rfind('@') {
+                if at_pos > 0 {
+                    current_name = Some(first_spec[..at_pos].to_string());
+                }
+            }
+            continue;
+        }
+
+        // Indented `version "X.Y.Z"` line
+        if let Some(ref name) = current_name {
+            if trimmed.starts_with("version ") {
+                let version = trimmed
+                    .strip_prefix("version ")
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"');
+                if !version.is_empty() {
+                    result.push((name.clone(), version.to_string()));
+                }
+                current_name = None;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Parse a pnpm-lock.yaml file and extract package name/version pairs.
+///
+/// pnpm-lock.yaml (v5/v6) has a `packages:` section where keys look like:
+/// ```text
+///   /express@4.18.2:
+/// ```
+/// or (v9 / lockfileVersion 9):
+/// ```text
+///   express@4.18.2:
+/// ```
+///
+/// We use simple line-based matching to avoid pulling in a full YAML parser.
+pub fn parse_pnpm_lock(content: &str) -> Result<Vec<(String, String)>, ParseError> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    let mut in_packages = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect the `packages:` section
+        if trimmed == "packages:" {
+            in_packages = true;
+            continue;
+        }
+
+        // A new top-level key ends the packages section
+        if in_packages && !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty() {
+            in_packages = false;
+            continue;
+        }
+
+        if !in_packages {
+            continue;
+        }
+
+        // Match lines like "  /express@4.18.2:" or "  express@4.18.2:"
+        let candidate = trimmed.trim_start_matches('/').trim_end_matches(':');
+        if candidate.is_empty() || !candidate.contains('@') {
+            continue;
+        }
+
+        // Handle scoped packages: @scope/name@version
+        // The version separator is the last '@'
+        if let Some(at_pos) = candidate.rfind('@') {
+            if at_pos == 0 {
+                // Malformed: only the scope @
+                continue;
+            }
+            let name = &candidate[..at_pos];
+            let version = &candidate[at_pos + 1..];
+            // Only accept entries that look like a top-level package key
+            // (they are indented exactly 2 spaces in pnpm-lock)
+            if !version.is_empty() && !name.is_empty() {
+                result.push((name.to_string(), version.to_string()));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// Find and load a manifest by searching upward from a directory.

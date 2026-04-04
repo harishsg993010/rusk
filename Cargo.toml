@@ -86,6 +86,9 @@ thiserror = "2"
 anyhow = "1"
 miette = { version = "7", features = ["fancy"] }
 
+# Filesystem / platform
+dirs = "5"
+
 # Misc
 url = { version = "2", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }

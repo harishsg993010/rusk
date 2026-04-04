@@ -82,6 +82,8 @@ pub enum Commands {
     Python(commands::python::PythonArgs),
     /// Manage isolated CLI tools (like uvx / pipx).
     Tool(commands::tool::ToolArgs),
+    /// Import dependencies from package-lock.json, yarn.lock, or pnpm-lock.yaml.
+    Migrate(commands::migrate::MigrateArgs),
     /// Shorthand for `rusk tool run` (like uvx).
     #[command(name = "x")]
     X(commands::tool::ToolRunArgs),
@@ -147,6 +149,7 @@ async fn main() {
         Commands::Venv(args) => commands::venv::run(args).await,
         Commands::List(args) => commands::list::run(args, fmt).await,
         Commands::Python(args) => commands::python::run(args).await,
+        Commands::Migrate(args) => commands::migrate::run(args, fmt).await,
         Commands::Tool(args) => commands::tool::run(args).await,
         Commands::X(args) => commands::tool::run_x(args).await,
     };

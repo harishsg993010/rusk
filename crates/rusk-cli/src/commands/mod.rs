@@ -19,4 +19,5 @@ pub mod sync;
 pub mod venv;
 pub mod list;
 pub mod python;
+pub mod migrate;
 pub mod tool;

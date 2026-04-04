@@ -500,23 +500,84 @@ pub async fn run_install(
 
     if let Some(ref js_deps) = manifest.js_dependencies {
         emit("Resolving JavaScript dependencies...");
+
+        // Read .npmrc auth token (project-level first, then home directory)
+        let npmrc_token = {
+            let project_npmrc = config.project_dir.join(".npmrc");
+            let home_npmrc = dirs::home_dir().map(|h| h.join(".npmrc"));
+
+            let npmrc_content = if project_npmrc.exists() {
+                info!(path = %project_npmrc.display(), "reading project .npmrc");
+                std::fs::read_to_string(&project_npmrc).ok()
+            } else if let Some(ref hp) = home_npmrc {
+                if hp.exists() {
+                    info!(path = %hp.display(), "reading home .npmrc");
+                    std::fs::read_to_string(hp).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            npmrc_content.and_then(|content| {
+                let npmrc_config = rusk_registry_npm::parse_npmrc(&content);
+                let registry_url_str = js_deps.registry_url.as_deref()
+                    .unwrap_or("https://registry.npmjs.org");
+                let token = rusk_registry_npm::find_token_for_registry(
+                    &npmrc_config,
+                    registry_url_str,
+                );
+                if token.is_some() {
+                    info!("found auth token in .npmrc for registry");
+                }
+                token
+            })
+        };
+
         let npm_client = Arc::new(if let Some(ref registry_url) = js_deps.registry_url {
             emit(&format!("Using custom registry: {registry_url}"));
             info!(registry_url = %registry_url, "using custom npm registry");
             NpmRegistryClient::new(rusk_core::RegistryUrl::parse(registry_url)
                 .unwrap_or_else(|_| rusk_core::RegistryUrl::npm_default()))
+                .with_auth(npmrc_token.clone())
         } else {
             NpmRegistryClient::default_registry()
+                .with_auth(npmrc_token.clone())
         });
 
-        // Seed with direct dependencies
+        // Seed with direct dependencies (including optional deps)
         let all_deps = collect_js_deps(js_deps, config.include_dev);
-        let mut current_level: Vec<(String, String)> = all_deps
-            .iter()
-            .map(|(name, entry)| (name.clone(), entry.version_req().to_string()))
-            .collect();
+        let mut current_level: Vec<(String, String)> = Vec::new();
+        let mut git_deps: Vec<(String, String)> = Vec::new();
+        let mut optional_queue: Vec<(String, String)> = Vec::new();
 
-        info!(direct = all_deps.len(), "resolving JS dependencies (parallel transitive)");
+        // Separate git deps and optional deps from normal deps
+        for (name, entry) in &all_deps {
+            let version_req_str = entry.version_req().to_string();
+            if is_git_dep(&version_req_str) {
+                git_deps.push((name.clone(), version_req_str));
+            } else {
+                current_level.push((name.clone(), version_req_str));
+            }
+        }
+
+        // Collect optional dependencies
+        for (name, entry) in &js_deps.optional_dependencies {
+            let version_req_str = entry.version_req().to_string();
+            if is_git_dep(&version_req_str) {
+                git_deps.push((name.clone(), version_req_str));
+            } else {
+                optional_queue.push((name.clone(), version_req_str));
+            }
+        }
+
+        info!(
+            direct = all_deps.len(),
+            git = git_deps.len(),
+            optional = optional_queue.len(),
+            "resolving JS dependencies (parallel transitive)"
+        );
 
         let mut depth = 0u32;
         while !current_level.is_empty() {
@@ -647,7 +708,19 @@ pub async fn run_install(
                 for dep in &ver_meta.dependencies {
                     let dep_name_clean = strip_extras(&dep.name).to_string();
                     if dep.kind == DependencyKind::Normal && !resolved_names.contains(&dep_name_clean) {
-                        next_level.push((dep_name_clean, dep.requirement.clone()));
+                        if is_git_dep(&dep.requirement) {
+                            git_deps.push((dep_name_clean.clone(), dep.requirement.clone()));
+                        } else {
+                            next_level.push((dep_name_clean.clone(), dep.requirement.clone()));
+                        }
+                    }
+                    // Queue transitive optional deps separately
+                    if dep.kind == DependencyKind::Optional && !resolved_names.contains(&dep_name_clean) {
+                        if is_git_dep(&dep.requirement) {
+                            git_deps.push((dep_name_clean.clone(), dep.requirement.clone()));
+                        } else {
+                            optional_queue.push((dep_name_clean, dep.requirement.clone()));
+                        }
                     }
                 }
 
@@ -666,6 +739,148 @@ pub async fn run_install(
 
             current_level = next_level;
             depth += 1;
+        }
+
+        // Resolve optional dependencies (best-effort: warn on failure, don't block install)
+        if !optional_queue.is_empty() {
+            emit(&format!("Resolving {} optional dependencies...", optional_queue.len()));
+            info!(count = optional_queue.len(), "resolving optional dependencies");
+
+            for (name, version_req_str) in &optional_queue {
+                if resolved_names.contains(name) {
+                    continue;
+                }
+
+                let pkg_id = PackageId::js(name);
+                match npm_client.fetch_packument(&pkg_id).await {
+                    Ok(packument) => {
+                        let pkg_meta = NpmRegistryClient::packument_to_metadata(&pkg_id, &packument);
+
+                        let semver_req = match parse_npm_range(version_req_str) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                warn!(
+                                    package = %name,
+                                    error = %e,
+                                    "optional dependency has invalid version range, skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let version_req = rusk_core::VersionReq::SemverReq(semver_req);
+
+                        let matching_versions: Vec<&Version> = pkg_meta
+                            .versions
+                            .iter()
+                            .filter(|v| version_req.matches(v))
+                            .collect();
+
+                        if matching_versions.is_empty() {
+                            warn!(
+                                package = %name,
+                                range = %version_req_str,
+                                "optional dependency not available, skipping"
+                            );
+                            continue;
+                        }
+
+                        let best_version = matching_versions
+                            .iter()
+                            .max()
+                            .cloned()
+                            .expect("non-empty");
+
+                        info!(package = %name, version = %best_version, "resolved optional dependency");
+
+                        let ver_str = best_version.to_string();
+                        let ver_meta = if let Some(meta) = pkg_meta.version_metadata.get(&ver_str) {
+                            meta.clone()
+                        } else {
+                            match npm_client.fetch_version_metadata(&pkg_id, best_version).await {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    warn!(
+                                        package = %name,
+                                        error = %e,
+                                        "optional dependency version metadata fetch failed, skipping"
+                                    );
+                                    continue;
+                                }
+                            }
+                        };
+
+                        let tarball_url = match ver_meta.preferred_artifact().map(|a| a.url.to_string()) {
+                            Some(url) => url,
+                            None => {
+                                warn!(
+                                    package = %name,
+                                    "optional dependency has no download artifact, skipping"
+                                );
+                                continue;
+                            }
+                        };
+
+                        let digest = ver_meta.preferred_artifact().and_then(|a| a.sha256);
+
+                        let (signatures, integrity) = packument
+                            .versions
+                            .get(&ver_str)
+                            .map(|npm_ver| {
+                                let sigs = npm_ver.dist.signatures.clone().unwrap_or_default();
+                                let int = npm_ver.dist.integrity.clone();
+                                (sigs, int)
+                            })
+                            .unwrap_or_default();
+
+                        resolved_names.insert(name.clone());
+                        resolved_packages.push(ResolvedPackage {
+                            package_id: pkg_id,
+                            version: best_version.clone(),
+                            tarball_url,
+                            digest,
+                            dependencies: ver_meta.dependencies,
+                            signatures,
+                            integrity,
+                            filename: None,
+                        });
+                    }
+                    Err(e) => {
+                        warn!(
+                            package = %name,
+                            error = %e,
+                            "optional dependency not available, skipping"
+                        );
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Resolve git dependencies (clone and copy to node_modules)
+        if !git_deps.is_empty() {
+            emit(&format!("Installing {} git dependencies...", git_deps.len()));
+            info!(count = git_deps.len(), "installing git dependencies");
+
+            std::fs::create_dir_all(&node_modules)?;
+
+            for (name, url) in &git_deps {
+                if resolved_names.contains(name) {
+                    continue;
+                }
+                match resolve_git_dep(url, name, &node_modules).await {
+                    Ok(()) => {
+                        resolved_names.insert(name.clone());
+                    }
+                    Err(e) => {
+                        warn!(
+                            package = %name,
+                            error = %e,
+                            "git dependency install failed"
+                        );
+                        return Err(e);
+                    }
+                }
+            }
         }
 
         metrics.record_resolved(resolved_packages.len() as u64);
@@ -2062,4 +2277,73 @@ fn wheel_matches_platform(filename: &str, platform_tags: &[String]) -> bool {
         }
     }
     false
+}
+
+/// Check if a dependency version spec refers to a git repository.
+///
+/// Recognizes the following patterns:
+/// - `git+https://...` or `git+ssh://...`
+/// - `git://...`
+/// - `github:user/repo`
+/// - `user/repo` (GitHub shorthand, without `@` which would be a scoped package)
+fn is_git_dep(version_spec: &str) -> bool {
+    version_spec.starts_with("git+")
+        || version_spec.starts_with("git://")
+        || version_spec.starts_with("github:")
+        || (version_spec.contains('/')
+            && !version_spec.starts_with('@')
+            && !version_spec.starts_with("http")
+            && !version_spec.contains(' '))
+}
+
+/// Clone a git dependency and install it into node_modules.
+///
+/// Performs a shallow clone (`--depth 1`) and removes the `.git` directory
+/// after cloning to save space and avoid nested git repos.
+async fn resolve_git_dep(url: &str, name: &str, node_modules: &Path) -> Result<(), InstallError> {
+    let clean_url = url.strip_prefix("git+").unwrap_or(url);
+    let clean_url = if clean_url.starts_with("github:") {
+        format!(
+            "https://github.com/{}.git",
+            clean_url.strip_prefix("github:").unwrap()
+        )
+    } else if !clean_url.contains("://") && clean_url.contains('/') {
+        // GitHub shorthand: user/repo
+        format!("https://github.com/{}.git", clean_url)
+    } else {
+        clean_url.to_string()
+    };
+
+    let target = node_modules.join(name);
+
+    // Remove existing target if present
+    if target.exists() {
+        std::fs::remove_dir_all(&target)?;
+    }
+
+    let target_str = target.to_string_lossy().to_string();
+    let status = tokio::process::Command::new("git")
+        .args(["clone", "--depth", "1", &clean_url, &target_str])
+        .status()
+        .await
+        .map_err(|e| {
+            InstallError::ResolutionFailed(format!(
+                "failed to run git clone for {name}: {e}"
+            ))
+        })?;
+
+    if !status.success() {
+        return Err(InstallError::ResolutionFailed(format!(
+            "git clone failed for {name} (url: {clean_url})"
+        )));
+    }
+
+    // Remove .git directory to save space and avoid nested repos
+    let git_dir = target.join(".git");
+    if git_dir.exists() {
+        std::fs::remove_dir_all(&git_dir)?;
+    }
+
+    info!(package = %name, url = %clean_url, "installed git dependency");
+    Ok(())
 }

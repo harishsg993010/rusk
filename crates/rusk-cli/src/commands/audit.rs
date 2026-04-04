@@ -1,10 +1,12 @@
 //! `rusk audit` command.
 //!
 //! Evaluates the dependency tree against trust policies, checks for
-//! revoked packages, and reports policy violations.
+//! revoked packages, reports policy violations, and scans for known
+//! security advisories via the npm bulk advisory API.
 
 use clap::Args;
 use miette::Result;
+use rusk_core::Ecosystem;
 use rusk_orchestrator::config::OrchestratorConfig;
 
 /// Arguments for the audit command.
@@ -130,6 +132,64 @@ pub async fn run(args: AuditArgs, format: crate::output::OutputFormat) -> Result
         }
     }
 
+    // ── Security advisory scan (npm packages) ──────────────────────
+    // Collect JS package name/version pairs from the lockfile.
+    let js_packages: Vec<(String, String)> = lockfile
+        .packages
+        .values()
+        .filter(|p| p.ecosystem == Ecosystem::Js)
+        .map(|p| (p.package.display_name(), p.version.to_string()))
+        .collect();
+
+    if !js_packages.is_empty() {
+        if !json_output {
+            spinner.set_message("Checking security advisories...");
+        }
+
+        let npm_client = rusk_registry_npm::NpmRegistryClient::default_registry();
+        match npm_client.fetch_advisories(&js_packages).await {
+            Ok(advisories) => {
+                for adv in &advisories {
+                    let sev = match adv.severity.as_str() {
+                        "critical" => "critical",
+                        "high" => "high",
+                        "moderate" => "moderate",
+                        "low" => "low",
+                        _ => "info",
+                    };
+                    issues.push(AuditIssue {
+                        package: adv.package_name.clone(),
+                        version: adv.vulnerable_versions.clone(),
+                        severity: match sev {
+                            "critical" => "critical",
+                            "high" => "high",
+                            "moderate" => "moderate",
+                            "low" => "low",
+                            _ => "info",
+                        },
+                        message: format!(
+                            "{} ({})",
+                            adv.title, adv.url
+                        ),
+                        remediation: Some(format!(
+                            "Upgrade {} to a version outside {}",
+                            adv.package_name, adv.vulnerable_versions
+                        )),
+                    });
+                }
+            }
+            Err(e) => {
+                // Advisory lookup is informational; log but don't block.
+                tracing::warn!("advisory check failed: {}", e);
+                if !json_output {
+                    crate::output::print_warning(&format!(
+                        "Could not fetch security advisories: {e}"
+                    ));
+                }
+            }
+        }
+    }
+
     spinner.finish_and_clear();
 
     // JSON output path (either --format json or --report json)
@@ -179,14 +239,22 @@ pub async fn run(args: AuditArgs, format: crate::output::OutputFormat) -> Result
             } else {
                 for issue in &issues {
                     let prefix = match issue.severity {
-                        "high" | "critical" => "ERROR",
+                        "critical" => "CRIT ",
+                        "high" => "HIGH ",
+                        "moderate" => "MOD  ",
                         "warning" => "WARN ",
+                        "low" => "LOW  ",
                         _ => "INFO ",
                     };
-                    crate::output::print_warning(&format!(
+                    let line = format!(
                         "[{prefix}] {}@{}: {}",
                         issue.package, issue.version, issue.message
-                    ));
+                    );
+                    match issue.severity {
+                        "critical" | "high" => crate::output::print_error(&line),
+                        "moderate" | "warning" => crate::output::print_warning(&line),
+                        _ => crate::output::print_info(&line),
+                    }
                 }
                 crate::output::print_info(&format!("Found {} issues", issues.len()));
             }
@@ -194,10 +262,15 @@ pub async fn run(args: AuditArgs, format: crate::output::OutputFormat) -> Result
         AuditReportFormat::Full => {
             crate::output::print_info(&format!("Audited {total} packages"));
             for issue in &issues {
-                crate::output::print_warning(&format!(
+                let line = format!(
                     "[{}] {}@{}: {}",
                     issue.severity, issue.package, issue.version, issue.message
-                ));
+                );
+                match issue.severity {
+                    "critical" | "high" => crate::output::print_error(&line),
+                    "moderate" | "warning" => crate::output::print_warning(&line),
+                    _ => crate::output::print_info(&line),
+                }
                 if let Some(ref rem) = issue.remediation {
                     crate::output::print_info(&format!("  Remediation: {rem}"));
                 }
@@ -212,8 +285,21 @@ pub async fn run(args: AuditArgs, format: crate::output::OutputFormat) -> Result
         }
     }
 
+    let has_critical_high = issues
+        .iter()
+        .any(|i| matches!(i.severity, "critical" | "high"));
+
+    if args.strict && has_critical_high {
+        return Err(miette::miette!(
+            "audit found critical/high issues ({} total)",
+            issues.len()
+        ));
+    }
     if args.strict && !issues.is_empty() {
-        return Err(miette::miette!("audit found {} issues", issues.len()));
+        crate::output::print_warning(&format!(
+            "audit found {} issues (none critical/high)",
+            issues.len()
+        ));
     }
 
     crate::output::print_success("audit complete");

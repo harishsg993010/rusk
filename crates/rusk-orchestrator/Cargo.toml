@@ -42,3 +42,4 @@ semver = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 futures = { workspace = true }
+dirs = { workspace = true }

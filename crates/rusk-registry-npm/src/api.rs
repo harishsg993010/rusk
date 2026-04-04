@@ -25,6 +25,8 @@ use tracing::{debug, instrument, warn};
 pub struct NpmRegistryClient {
     registry_url: RegistryUrl,
     http: reqwest::Client,
+    /// Optional Bearer auth token for private registries (from .npmrc).
+    auth_token: Option<String>,
 }
 
 impl NpmRegistryClient {
@@ -36,17 +38,31 @@ impl NpmRegistryClient {
                 .user_agent("rusk/0.1.0")
                 .build()
                 .expect("failed to build HTTP client"),
+            auth_token: None,
         }
     }
 
     /// Create a new client with a custom reqwest client (for testing/proxies).
     pub fn with_http_client(registry_url: RegistryUrl, http: reqwest::Client) -> Self {
-        Self { registry_url, http }
+        Self {
+            registry_url,
+            http,
+            auth_token: None,
+        }
     }
 
     /// Create a client for the default npm registry (registry.npmjs.org).
     pub fn default_registry() -> Self {
         Self::new(RegistryUrl::npm_default())
+    }
+
+    /// Set an auth token for private registry access.
+    ///
+    /// The token will be sent as a Bearer token in the Authorization header
+    /// for all subsequent requests.
+    pub fn with_auth(mut self, token: Option<String>) -> Self {
+        self.auth_token = token;
+        self
     }
 
     /// Encode a package name for use in a registry URL path.
@@ -73,10 +89,15 @@ impl NpmRegistryClient {
         let url = format!("{}/{}", self.registry_url.as_url(), encoded_name);
         debug!(url = %url, "fetching npm packument");
 
-        let response = self
+        let mut req = self
             .http
             .get(&url)
-            .header("Accept", "application/json")
+            .header("Accept", "application/json");
+        if let Some(ref token) = self.auth_token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = req
             .send()
             .await
             .map_err(|e| RegistryError::Network(e.to_string()))?;
@@ -324,6 +345,102 @@ impl NpmRegistryClient {
         }
     }
 
+    /// Fetch security advisories for a set of packages from the npm bulk advisory API.
+    ///
+    /// POSTs to `https://registry.npmjs.org/-/npm/v1/security/advisories/bulk`
+    /// with a JSON body mapping package names to arrays of installed versions.
+    /// Returns a flat list of [`Advisory`] objects for any known vulnerabilities.
+    ///
+    /// Network errors are returned as `RegistryError::Network` so callers can
+    /// treat audit failures as non-fatal.
+    #[instrument(skip(self, packages), fields(count = packages.len()))]
+    pub async fn fetch_advisories(
+        &self,
+        packages: &[(String, String)], // (name, version) pairs
+    ) -> Result<Vec<Advisory>, RegistryError> {
+        // Build the request body: { "pkg": ["1.0.0"], "other": ["2.3.4"] }
+        let mut body: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, version) in packages {
+            body.entry(name.clone())
+                .or_default()
+                .push(version.clone());
+        }
+
+        let url = format!(
+            "{}/-/npm/v1/security/advisories/bulk",
+            self.registry_url.as_url()
+        );
+        debug!(url = %url, "fetching npm security advisories");
+
+        let response = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| RegistryError::Network(e.to_string()))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(RegistryError::InvalidResponse(format!(
+                "HTTP {} from {}",
+                status, url
+            )));
+        }
+
+        let raw: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| RegistryError::InvalidResponse(format!("error decoding advisories: {e}")))?;
+
+        let mut advisories = Vec::new();
+
+        // The response is a JSON object keyed by advisory ID (numeric string).
+        // Each value is an advisory object.
+        if let Some(obj) = raw.as_object() {
+            for (_key, value) in obj {
+                let id = value.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let title = value
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let severity = value
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("moderate")
+                    .to_string();
+                let url_str = value
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let vulnerable_versions = value
+                    .get("vulnerable_versions")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("*")
+                    .to_string();
+                let package_name = value
+                    .get("module_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                advisories.push(Advisory {
+                    id,
+                    title,
+                    severity,
+                    url: url_str,
+                    vulnerable_versions,
+                    package_name,
+                });
+            }
+        }
+
+        Ok(advisories)
+    }
+
     /// Convert an npm version document into a unified VersionMetadata.
     fn convert_version(
         package: &PackageId,
@@ -408,6 +525,23 @@ impl NpmRegistryClient {
             published_at: None,
         })
     }
+}
+
+/// A security advisory returned by the npm bulk advisory endpoint.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Advisory {
+    /// Advisory ID from the npm registry.
+    pub id: u64,
+    /// Human-readable title describing the vulnerability.
+    pub title: String,
+    /// Severity level: "critical", "high", "moderate", or "low".
+    pub severity: String,
+    /// URL to the full advisory details.
+    pub url: String,
+    /// Semver range of versions affected (e.g. "<2.1.4").
+    pub vulnerable_versions: String,
+    /// Name of the affected package.
+    pub package_name: String,
 }
 
 /// Try to extract a SHA-256 digest from a Subresource Integrity string.
@@ -508,10 +642,15 @@ impl RegistryClient for NpmRegistryClient {
         );
         debug!(url = %url, "fetching npm version metadata");
 
-        let response = self
+        let mut req = self
             .http
             .get(&url)
-            .header("Accept", "application/json")
+            .header("Accept", "application/json");
+        if let Some(ref token) = self.auth_token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = req
             .send()
             .await
             .map_err(|e| RegistryError::Network(e.to_string()))?;

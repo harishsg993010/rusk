@@ -17,8 +17,8 @@ pub mod workspace;
 
 pub use normalize::normalize_manifest;
 pub use parser::{
-    find_manifest, load_manifest, parse_manifest, parse_package_json, parse_pyproject_toml,
-    parse_requirements_txt, ParseError,
+    find_manifest, load_manifest, parse_manifest, parse_package_json, parse_package_lock_json,
+    parse_pnpm_lock, parse_pyproject_toml, parse_requirements_txt, parse_yarn_lock, ParseError,
 };
 pub use schema::{
     BuildConfig, DependencyEntry, JsDependencies, Manifest, PackageMetadata, PythonDependencies,
