@@ -87,6 +87,10 @@ pub enum Commands {
     /// Shorthand for `rusk tool run` (like uvx).
     #[command(name = "x")]
     X(commands::tool::ToolRunArgs),
+    /// Patch an installed package (copy for editing or commit a diff).
+    Patch(commands::patch::PatchArgs),
+    /// Link a local package for development.
+    Link(commands::link::LinkArgs),
 }
 
 #[tokio::main]
@@ -152,6 +156,8 @@ async fn main() {
         Commands::Migrate(args) => commands::migrate::run(args, fmt).await,
         Commands::Tool(args) => commands::tool::run(args).await,
         Commands::X(args) => commands::tool::run_x(args).await,
+        Commands::Patch(args) => commands::patch::run(args).await,
+        Commands::Link(args) => commands::link::run(args).await,
     };
 
     match result {

@@ -21,3 +21,5 @@ pub mod list;
 pub mod python;
 pub mod migrate;
 pub mod tool;
+pub mod patch;
+pub mod link;

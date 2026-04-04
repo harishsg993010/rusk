@@ -552,6 +552,12 @@ pub async fn run_install(
         let mut git_deps: Vec<(String, String)> = Vec::new();
         let mut optional_queue: Vec<(String, String)> = Vec::new();
 
+        // Collect version overrides (npm-style).
+        let js_overrides: std::collections::HashMap<String, String> = js_deps.overrides.clone();
+        if !js_overrides.is_empty() {
+            info!(count = js_overrides.len(), "applying version overrides");
+        }
+
         // Separate git deps and optional deps from normal deps
         for (name, entry) in &all_deps {
             let version_req_str = entry.version_req().to_string();
@@ -641,6 +647,14 @@ pub async fn run_install(
 
                 // Convert the raw packument to unified PackageMetadata
                 let pkg_meta = NpmRegistryClient::packument_to_metadata(&pkg_id, &packument);
+
+                // Apply version override if one exists for this package.
+                let version_req_str = if let Some(override_ver) = js_overrides.get(&name) {
+                    info!(package = %name, override_version = %override_ver, "applying version override");
+                    override_ver.clone()
+                } else {
+                    version_req_str
+                };
 
                 // Parse version requirement
                 let semver_req = parse_npm_range(&version_req_str)
@@ -1627,90 +1641,186 @@ pub async fn run_install(
     let mut extracted_count = 0usize;
     let js_count = resolved_packages.len();
 
+    // Check whether the manifest requests isolated (pnpm-style) layout.
+    let use_isolated = manifest
+        .js_dependencies
+        .as_ref()
+        .and_then(|js| js.node_linker.as_deref())
+        .map_or(false, |l| l == "isolated" || l == "pnpm");
+
     if !resolved_packages.is_empty() {
         emit("Materializing packages into node_modules...");
-        info!("materializing JS packages");
+        info!(isolated = use_isolated, "materializing JS packages");
 
         let extracted_cache = config.extracted_cache_dir();
         std::fs::create_dir_all(&node_modules)?;
         std::fs::create_dir_all(&extracted_cache)?;
 
-        for (i, rp) in resolved_packages.iter().enumerate() {
-            let digest = download_digests[i];
-            let pkg_name = rp.package_id.display_name();
-            let target_dir = node_modules.join(&pkg_name);
-            let cache_dir = extracted_cache
-                .join(&digest.shard_prefix())
-                .join(digest.to_hex());
+        if use_isolated {
+            // pnpm-style isolated layout:
+            //   node_modules/.rusk/<name>@<ver>/node_modules/<name>  (real files)
+            //   node_modules/<name>  ->  .rusk/<name>@<ver>/node_modules/<name>  (symlink)
+            let virtual_store = node_modules.join(".rusk");
+            std::fs::create_dir_all(&virtual_store)?;
 
-            // Security check: CAS blob must exist for this digest
-            if !cas.contains(&digest) {
-                if let Some(ref url) = report_url {
-                    let report = AnomalyReport {
-                        timestamp: chrono::Utc::now(),
-                        project: config.project_dir.display().to_string(),
-                        anomaly_type: AnomalyType::CasCorruption,
-                        package: pkg_name.clone(),
-                        version: rp.version.to_string(),
-                        detail: format!("CAS blob not found for digest {}", digest),
-                        severity: Severity::Critical,
-                        hostname: reporting::get_hostname(),
-                    };
-                    tokio::spawn(reporting::report_anomaly(url.clone(), report));
-                }
-                return Err(InstallError::MaterializationFailed(
-                    format!(
+            for (i, rp) in resolved_packages.iter().enumerate() {
+                let digest = download_digests[i];
+                let pkg_name = rp.package_id.display_name();
+                let store_key = format!("{}@{}", pkg_name, rp.version);
+                let store_pkg = virtual_store
+                    .join(&store_key)
+                    .join("node_modules")
+                    .join(&pkg_name);
+                let cache_dir = extracted_cache
+                    .join(&digest.shard_prefix())
+                    .join(digest.to_hex());
+
+                // Security check
+                if !cas.contains(&digest) {
+                    if let Some(ref url) = report_url {
+                        let report = AnomalyReport {
+                            timestamp: chrono::Utc::now(),
+                            project: config.project_dir.display().to_string(),
+                            anomaly_type: AnomalyType::CasCorruption,
+                            package: pkg_name.clone(),
+                            version: rp.version.to_string(),
+                            detail: format!("CAS blob not found for digest {}", digest),
+                            severity: Severity::Critical,
+                            hostname: reporting::get_hostname(),
+                        };
+                        tokio::spawn(reporting::report_anomaly(url.clone(), report));
+                    }
+                    return Err(InstallError::MaterializationFailed(format!(
                         "CAS integrity check failed for {pkg_name}@{}: blob not found for digest {}",
                         rp.version, digest
-                    )
-                ));
+                    )));
+                }
+
+                // Populate the virtual store entry.
+                if !store_pkg.exists() {
+                    std::fs::create_dir_all(store_pkg.parent().unwrap())?;
+
+                    if cache_dir.exists() {
+                        emit(&format!("Linking {pkg_name}@{} (cached, isolated)...", rp.version));
+                        hardlink_dir(&cache_dir, &store_pkg).map_err(|e| {
+                            InstallError::MaterializationFailed(format!(
+                                "failed to hardlink {pkg_name}@{}: {}", rp.version, e
+                            ))
+                        })?;
+                        hardlinked_count += 1;
+                    } else {
+                        emit(&format!("Extracting {pkg_name}@{} (isolated)...", rp.version));
+                        let tarball_data = cas.read(&digest)?.ok_or_else(|| {
+                            InstallError::MaterializationFailed(format!(
+                                "CAS entry missing for {pkg_name}@{}", rp.version
+                            ))
+                        })?;
+                        std::fs::create_dir_all(&cache_dir)?;
+                        extract_npm_tarball(&tarball_data, &cache_dir).map_err(|e| {
+                            InstallError::MaterializationFailed(format!(
+                                "failed to extract {pkg_name}@{}: {}", rp.version, e
+                            ))
+                        })?;
+                        hardlink_dir(&cache_dir, &store_pkg).map_err(|e| {
+                            InstallError::MaterializationFailed(format!(
+                                "failed to hardlink {pkg_name}@{}: {}", rp.version, e
+                            ))
+                        })?;
+                        extracted_count += 1;
+                    }
+                }
+
+                // Create top-level symlink: node_modules/<name> -> .rusk/<key>/node_modules/<name>
+                let top_link = node_modules.join(&pkg_name);
+                if !top_link.exists() {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&store_pkg, &top_link).ok();
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_dir(&store_pkg, &top_link).ok();
+                }
+
+                materialized_count += 1;
             }
+        } else {
+            // Standard hoisted layout (default).
+            for (i, rp) in resolved_packages.iter().enumerate() {
+                let digest = download_digests[i];
+                let pkg_name = rp.package_id.display_name();
+                let target_dir = node_modules.join(&pkg_name);
+                let cache_dir = extracted_cache
+                    .join(&digest.shard_prefix())
+                    .join(digest.to_hex());
 
-            // Remove existing target if present
-            if target_dir.exists() {
-                std::fs::remove_dir_all(&target_dir)?;
+                // Security check: CAS blob must exist for this digest
+                if !cas.contains(&digest) {
+                    if let Some(ref url) = report_url {
+                        let report = AnomalyReport {
+                            timestamp: chrono::Utc::now(),
+                            project: config.project_dir.display().to_string(),
+                            anomaly_type: AnomalyType::CasCorruption,
+                            package: pkg_name.clone(),
+                            version: rp.version.to_string(),
+                            detail: format!("CAS blob not found for digest {}", digest),
+                            severity: Severity::Critical,
+                            hostname: reporting::get_hostname(),
+                        };
+                        tokio::spawn(reporting::report_anomaly(url.clone(), report));
+                    }
+                    return Err(InstallError::MaterializationFailed(
+                        format!(
+                            "CAS integrity check failed for {pkg_name}@{}: blob not found for digest {}",
+                            rp.version, digest
+                        )
+                    ));
+                }
+
+                // Remove existing target if present
+                if target_dir.exists() {
+                    std::fs::remove_dir_all(&target_dir)?;
+                }
+
+                if cache_dir.exists() {
+                    // Fast path: hardlink from extracted cache
+                    emit(&format!("Linking {pkg_name}@{} (cached)...", rp.version));
+                    hardlink_dir(&cache_dir, &target_dir)
+                        .map_err(|e| InstallError::MaterializationFailed(
+                            format!("failed to hardlink {pkg_name}@{}: {}", rp.version, e)
+                        ))?;
+                    hardlinked_count += 1;
+                } else {
+                    // Slow path: extract from CAS → populate cache → hardlink
+                    emit(&format!("Extracting {pkg_name}@{}...", rp.version));
+
+                    let tarball_data = cas
+                        .read(&digest)?
+                        .ok_or_else(|| InstallError::MaterializationFailed(
+                            format!("CAS entry missing for {pkg_name}@{}", rp.version)
+                        ))?;
+
+                    // Extract to cache directory
+                    std::fs::create_dir_all(&cache_dir)?;
+                    extract_npm_tarball(&tarball_data, &cache_dir)
+                        .map_err(|e| InstallError::MaterializationFailed(
+                            format!("failed to extract {pkg_name}@{}: {}", rp.version, e)
+                        ))?;
+
+                    // Hardlink from cache to node_modules
+                    hardlink_dir(&cache_dir, &target_dir)
+                        .map_err(|e| InstallError::MaterializationFailed(
+                            format!("failed to hardlink {pkg_name}@{}: {}", rp.version, e)
+                        ))?;
+                    extracted_count += 1;
+                }
+
+                materialized_count += 1;
             }
-
-            if cache_dir.exists() {
-                // Fast path: hardlink from extracted cache
-                emit(&format!("Linking {pkg_name}@{} (cached)...", rp.version));
-                hardlink_dir(&cache_dir, &target_dir)
-                    .map_err(|e| InstallError::MaterializationFailed(
-                        format!("failed to hardlink {pkg_name}@{}: {}", rp.version, e)
-                    ))?;
-                hardlinked_count += 1;
-            } else {
-                // Slow path: extract from CAS → populate cache → hardlink
-                emit(&format!("Extracting {pkg_name}@{}...", rp.version));
-
-                let tarball_data = cas
-                    .read(&digest)?
-                    .ok_or_else(|| InstallError::MaterializationFailed(
-                        format!("CAS entry missing for {pkg_name}@{}", rp.version)
-                    ))?;
-
-                // Extract to cache directory
-                std::fs::create_dir_all(&cache_dir)?;
-                extract_npm_tarball(&tarball_data, &cache_dir)
-                    .map_err(|e| InstallError::MaterializationFailed(
-                        format!("failed to extract {pkg_name}@{}: {}", rp.version, e)
-                    ))?;
-
-                // Hardlink from cache to node_modules
-                hardlink_dir(&cache_dir, &target_dir)
-                    .map_err(|e| InstallError::MaterializationFailed(
-                        format!("failed to hardlink {pkg_name}@{}: {}", rp.version, e)
-                    ))?;
-                extracted_count += 1;
-            }
-
-            materialized_count += 1;
         }
 
         info!(
             materialized = materialized_count,
             hardlinked = hardlinked_count,
             extracted = extracted_count,
+            isolated = use_isolated,
             "JS materialization complete"
         );
     }

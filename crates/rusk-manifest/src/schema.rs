@@ -79,6 +79,16 @@ pub struct JsDependencies {
     /// Primary registry URL (replaces default npmjs.org). Like npm --registry.
     #[serde(default)]
     pub registry_url: Option<String>,
+    /// Version overrides for transitive dependencies (like npm overrides / yarn resolutions).
+    /// Maps package name to a forced version string.
+    #[serde(default)]
+    pub overrides: HashMap<String, String>,
+    /// Patched dependencies: package name -> path to patch file.
+    #[serde(default)]
+    pub patched_dependencies: HashMap<String, String>,
+    /// Node modules layout: "hoisted" (default) or "isolated" (pnpm-style virtual store).
+    #[serde(default)]
+    pub node_linker: Option<String>,
 }
 
 /// Python dependency declarations.
