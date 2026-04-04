@@ -841,14 +841,27 @@ pub async fn run_install(
                         ))?
                 };
 
-                // Prefer wheel artifacts over sdist
+                // Prefer wheel artifacts matching current platform
+                let platform_tags = current_platform_wheel_tags();
                 let artifact = ver_meta
                     .artifacts
                     .iter()
-                    .find(|a| a.artifact_type == ArtifactType::PythonWheel)
+                    .find(|a| {
+                        a.artifact_type == ArtifactType::PythonWheel
+                            && wheel_matches_platform(&a.filename, &platform_tags)
+                    })
+                    // Fallback: pure-python wheel (none-any)
+                    .or_else(|| ver_meta.artifacts.iter().find(|a| {
+                        a.artifact_type == ArtifactType::PythonWheel
+                            && a.filename.contains("none-any")
+                    }))
+                    // Fallback: any sdist
+                    .or_else(|| ver_meta.artifacts.iter().find(|a| {
+                        a.artifact_type == ArtifactType::PythonSdist
+                    }))
                     .or_else(|| ver_meta.preferred_artifact())
                     .ok_or_else(|| InstallError::ResolutionFailed(
-                        format!("no download artifact found for {name}@{ver_str}")
+                        format!("no compatible artifact found for {name}@{ver_str} on this platform")
                     ))?;
 
                 let tarball_url = artifact.url.to_string();
@@ -1880,4 +1893,63 @@ fn detect_provenance_change(
             // Neither had provenance — nothing to compare
         }
     }
+}
+
+/// Get platform-specific wheel tags for the current OS and architecture.
+fn current_platform_wheel_tags() -> Vec<String> {
+    let mut tags = Vec::new();
+
+    if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
+        tags.push("win_amd64".to_string());
+        // Don't include win32 — 32-bit binaries crash on 64-bit Python
+    } else if cfg!(target_os = "windows") && cfg!(target_arch = "aarch64") {
+        tags.push("win_arm64".to_string());
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        tags.push("macosx_10_9_x86_64".to_string());
+        tags.push("macosx_10_9_universal2".to_string());
+        tags.push("macosx_11_0_x86_64".to_string());
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        tags.push("macosx_11_0_arm64".to_string());
+        tags.push("macosx_10_9_universal2".to_string());
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        tags.push("manylinux_2_17_x86_64".to_string());
+        tags.push("manylinux2014_x86_64".to_string());
+        tags.push("linux_x86_64".to_string());
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        tags.push("manylinux_2_17_aarch64".to_string());
+        tags.push("manylinux2014_aarch64".to_string());
+        tags.push("linux_aarch64".to_string());
+    }
+
+    // Universal tags that work everywhere
+    tags.push("any".to_string());
+
+    tags
+}
+
+/// Check if a wheel filename matches the current platform.
+/// Wheel filenames end with: {python}-{abi}-{platform}.whl
+/// We check the platform segment specifically, not substring of the whole name.
+fn wheel_matches_platform(filename: &str, platform_tags: &[String]) -> bool {
+    let name = filename.strip_suffix(".whl").unwrap_or(filename);
+    // Split on '-' — the last segment is the platform tag
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    // Platform tag is the last part (may contain dots for multi-platform: "macosx_10_9_x86_64.macosx_11_0_x86_64")
+    let platform_part = parts[parts.len() - 1].to_lowercase();
+    // Check each platform segment (split on '.' for multi-platform wheels)
+    let platform_segments: Vec<&str> = platform_part.split('.').collect();
+    for seg in &platform_segments {
+        if *seg == "any" {
+            return true;
+        }
+        for tag in platform_tags {
+            if tag != "any" && seg.contains(&tag.to_lowercase()) {
+                return true;
+            }
+        }
+    }
+    false
 }

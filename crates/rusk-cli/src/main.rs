@@ -78,6 +78,13 @@ pub enum Commands {
     Venv(commands::venv::VenvArgs),
     /// List installed packages with versions.
     List(commands::list::ListArgs),
+    /// Manage Python installations (list, find, pin).
+    Python(commands::python::PythonArgs),
+    /// Manage isolated CLI tools (like uvx / pipx).
+    Tool(commands::tool::ToolArgs),
+    /// Shorthand for `rusk tool run` (like uvx).
+    #[command(name = "x")]
+    X(commands::tool::ToolRunArgs),
 }
 
 #[tokio::main]
@@ -139,6 +146,9 @@ async fn main() {
         Commands::Sync(args) => commands::sync::run(args, fmt).await,
         Commands::Venv(args) => commands::venv::run(args).await,
         Commands::List(args) => commands::list::run(args, fmt).await,
+        Commands::Python(args) => commands::python::run(args).await,
+        Commands::Tool(args) => commands::tool::run(args).await,
+        Commands::X(args) => commands::tool::run_x(args).await,
     };
 
     match result {
