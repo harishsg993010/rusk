@@ -637,8 +637,9 @@ pub async fn run_install(
 
                 // Queue transitive deps for next level
                 for dep in &ver_meta.dependencies {
-                    if dep.kind == DependencyKind::Normal && !resolved_names.contains(&dep.name) {
-                        next_level.push((dep.name.clone(), dep.requirement.clone()));
+                    let dep_name_clean = strip_extras(&dep.name).to_string();
+                    if dep.kind == DependencyKind::Normal && !resolved_names.contains(&dep_name_clean) {
+                        next_level.push((dep_name_clean, dep.requirement.clone()));
                     }
                 }
 
@@ -869,8 +870,9 @@ pub async fn run_install(
 
                 // Queue transitive deps for next level
                 for dep in &ver_meta.dependencies {
-                    if dep.kind == DependencyKind::Normal && !py_resolved_names.contains(&dep.name) {
-                        next_level.push((dep.name.clone(), dep.requirement.clone()));
+                    let dep_name_clean = strip_extras(&dep.name).to_string();
+                    if dep.kind == DependencyKind::Normal && !py_resolved_names.contains(&dep_name_clean) {
+                        next_level.push((dep_name_clean, dep.requirement.clone()));
                     }
                 }
 
@@ -1893,6 +1895,13 @@ fn detect_provenance_change(
             // Neither had provenance — nothing to compare
         }
     }
+}
+
+/// Strip PEP 508 extras from a package name.
+/// "cuda-toolkit[cublas,cudart]" → "cuda-toolkit"
+/// "requests[security]" → "requests"
+fn strip_extras(name: &str) -> &str {
+    name.split('[').next().unwrap_or(name).trim()
 }
 
 /// Get platform-specific wheel tags for the current OS and architecture.
