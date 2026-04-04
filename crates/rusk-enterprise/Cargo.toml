@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Enterprise features: internal registries, org policies, airgap, audit export"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 rusk-core = { workspace = true }

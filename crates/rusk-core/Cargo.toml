@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Core types, digests, IDs, and error infrastructure for rusk"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 serde = { workspace = true }

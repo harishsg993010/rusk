@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Provenance and attestation verification for rusk"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 rusk-core = { workspace = true }

@@ -3,6 +3,8 @@ name = "rusk-registry"
 version.workspace = true
 edition.workspace = true
 description = "Registry client abstraction for rusk"
+license = "Apache-2.0"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 rusk-core = { workspace = true }

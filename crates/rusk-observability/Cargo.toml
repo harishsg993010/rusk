@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Tracing, metrics, and diagnostics infrastructure for rusk"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 tracing = { workspace = true }

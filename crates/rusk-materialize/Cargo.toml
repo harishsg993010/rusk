@@ -3,6 +3,8 @@ name = "rusk-materialize"
 version.workspace = true
 edition.workspace = true
 description = "Shared materialization framework for rusk"
+license = "Apache-2.0"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 rusk-core = { workspace = true }

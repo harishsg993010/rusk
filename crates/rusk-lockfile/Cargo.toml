@@ -3,6 +3,8 @@ name = "rusk-lockfile"
 version.workspace = true
 edition.workspace = true
 description = "Lockfile engine for rusk deterministic installs"
+license = "Apache-2.0"
+repository = "https://github.com/harishsg993010/rusk"
 
 [dependencies]
 rusk-core = { workspace = true }
