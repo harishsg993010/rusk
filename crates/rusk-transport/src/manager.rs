@@ -95,7 +95,7 @@ impl DownloadManager {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
         Self {
             client: reqwest::Client::builder()
-                .user_agent("rusk/0.1")
+                .user_agent("rusk/0.1 (compatible; pip/24.0)")
                 .build()
                 .expect("failed to build HTTP client"),
             cas,

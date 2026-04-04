@@ -604,6 +604,7 @@ pub async fn run_install(
                 let best_version = matching_versions
                     .iter()
                     .max()
+                    .cloned()
                     .expect("non-empty");
 
                 info!(package = %name, version = %best_version, "resolved");
@@ -614,7 +615,7 @@ pub async fn run_install(
                     meta.clone()
                 } else {
                     npm_client
-                        .fetch_version_metadata(&pkg_id, best_version)
+                        .fetch_version_metadata(&pkg_id, &best_version)
                         .await
                         .map_err(|e| InstallError::ResolutionFailed(
                             format!("failed to fetch version metadata for {name}@{ver_str}: {e}")
@@ -653,7 +654,7 @@ pub async fn run_install(
                 resolved_names.insert(name.clone());
                 resolved_packages.push(ResolvedPackage {
                     package_id: pkg_id,
-                    version: (*best_version).clone(),
+                    version: best_version.clone(),
                     tarball_url,
                     digest,
                     dependencies: ver_meta.dependencies,
@@ -791,13 +792,19 @@ pub async fn run_install(
                 handles.push(tokio::spawn(async move {
                     let pkg_id = PackageId::python(&name);
                     let result = client.fetch_package_metadata(&pkg_id).await;
+                    // Track which index resolved this package (0 = primary, 1+ = extra)
+                    let mut resolved_from_extra: Option<usize> = None;
                     // If not found on primary index, try extra indexes
                     let result = match &result {
                         Err(rusk_registry::RegistryError::PackageNotFound(_)) => {
                             let mut found = result;
-                            for extra in extra_urls.iter() {
+                            for (idx, extra) in extra_urls.iter().enumerate() {
                                 match extra.fetch_package_metadata(&pkg_id).await {
-                                    Ok(meta) => { found = Ok(meta); break; }
+                                    Ok(meta) => {
+                                        resolved_from_extra = Some(idx);
+                                        found = Ok(meta);
+                                        break;
+                                    }
                                     Err(_) => continue,
                                 }
                             }
@@ -805,7 +812,7 @@ pub async fn run_install(
                         }
                         _ => result,
                     };
-                    (name, version_req_str, pkg_id, result)
+                    (name, version_req_str, pkg_id, result, resolved_from_extra)
                 }));
             }
 
@@ -815,7 +822,7 @@ pub async fn run_install(
             let mut next_level: Vec<(String, String)> = Vec::new();
 
             for join_result in results {
-                let (name, version_req_str, pkg_id, fetch_result) = join_result
+                let (name, version_req_str, pkg_id, fetch_result, resolved_from_extra) = join_result
                     .map_err(|e| InstallError::ResolutionFailed(
                         format!("task join error: {e}")
                     ))?;
@@ -841,12 +848,11 @@ pub async fn run_install(
                     Some(rusk_core::VersionReq::Pep440Req(pep440_req))
                 };
 
-                // Find best matching version
-                let matching_versions: Vec<&Version> = pkg_meta
+                // Find best matching version (clone to avoid borrowing pkg_meta)
+                let matching_versions: Vec<Version> = pkg_meta
                     .versions
                     .iter()
                     .filter(|v| {
-                        // Skip prereleases unless explicitly allowed
                         if !config.allow_prereleases && v.is_prerelease() {
                             return false;
                         }
@@ -855,42 +861,69 @@ pub async fn run_install(
                             None => true,
                         }
                     })
+                    .cloned()
                     .collect();
 
-                if matching_versions.is_empty() {
-                    return Err(InstallError::ResolutionFailed(
-                        format!("no version of {name} matches {version_req_str}")
-                    ));
-                }
+                // If no match on this index, try extra indexes
+                let mut pkg_meta = pkg_meta;
+                let matching_versions = if matching_versions.is_empty() {
+                    let mut retry_match = Vec::new();
+                    for extra in extra_index_clients.iter() {
+                        if let Ok(em) = extra.fetch_package_metadata(&pkg_id).await {
+                            let mv: Vec<Version> = em.versions.iter()
+                                .filter(|v| {
+                                    if !config.allow_prereleases && v.is_prerelease() { return false; }
+                                    match &version_req { Some(req) => req.matches(v), None => true }
+                                })
+                                .cloned()
+                                .collect();
+                            if !mv.is_empty() {
+                                retry_match = mv;
+                                pkg_meta = em;
+                                break;
+                            }
+                        }
+                    }
+                    if retry_match.is_empty() {
+                        return Err(InstallError::ResolutionFailed(
+                            format!("no version of {name} matches {version_req_str}")
+                        ));
+                    }
+                    retry_match
+                } else {
+                    matching_versions.into_iter().collect()
+                };
 
-                let best_version = matching_versions
-                    .iter()
-                    .max()
-                    .expect("non-empty");
-
+                let best_version = matching_versions.iter().max().expect("non-empty").clone();
                 info!(package = %name, version = %best_version, "resolved (Python)");
 
-                // Get version metadata
+                // Get version metadata — use the client that resolved this package
                 let ver_str = best_version.to_string();
+                let resolving_client: &PypiRegistryClient = match resolved_from_extra {
+                    Some(idx) => &extra_index_clients[idx],
+                    None => &pypi_client,
+                };
                 let ver_meta = if let Some(meta) = pkg_meta.version_metadata.get(&ver_str) {
                     meta.clone()
                 } else {
-                    pypi_client
-                        .fetch_version_metadata(&pkg_id, best_version)
+                    resolving_client
+                        .fetch_version_metadata(&pkg_id, &best_version)
                         .await
                         .map_err(|e| InstallError::ResolutionFailed(
                             format!("failed to fetch version metadata for {name}@{ver_str}: {e}")
                         ))?
                 };
 
-                // Prefer wheel artifacts matching current platform
+                // Prefer wheel artifacts matching current platform AND Python version
                 let platform_tags = current_platform_wheel_tags();
+                let py_tag = detect_python_tag();
                 let artifact = ver_meta
                     .artifacts
                     .iter()
                     .find(|a| {
                         a.artifact_type == ArtifactType::PythonWheel
                             && wheel_matches_platform(&a.filename, &platform_tags)
+                            && wheel_matches_python(&a.filename, &py_tag)
                     })
                     // Fallback: pure-python wheel (none-any)
                     .or_else(|| ver_meta.artifacts.iter().find(|a| {
@@ -922,7 +955,7 @@ pub async fn run_install(
                 py_resolved_names.insert(name.clone());
                 py_resolved_packages.push(ResolvedPackage {
                     package_id: pkg_id,
-                    version: (*best_version).clone(),
+                    version: best_version.clone(),
                     tarball_url,
                     digest,
                     dependencies: ver_meta.dependencies,
@@ -1943,6 +1976,33 @@ fn detect_provenance_change(
 /// "requests[security]" → "requests"
 fn strip_extras(name: &str) -> &str {
     name.split('[').next().unwrap_or(name).trim()
+}
+
+/// Detect the Python version tag (e.g., "cp311") by running `python3 --version`.
+fn detect_python_tag() -> String {
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    if let Ok(output) = std::process::Command::new(python).arg("--version").output() {
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        // "Python 3.11.9" -> "cp311"
+        let parts: Vec<&str> = version_str.trim().split(' ').collect();
+        if parts.len() >= 2 {
+            let ver_parts: Vec<&str> = parts[1].split('.').collect();
+            if ver_parts.len() >= 2 {
+                return format!("cp{}{}", ver_parts[0], ver_parts[1]);
+            }
+        }
+    }
+    "cp311".to_string() // fallback
+}
+
+/// Check if a wheel filename matches the current Python version.
+/// Wheel format: name-version-python-abi-platform.whl
+/// e.g., torch-2.8.0+cpu-cp311-cp311-win_amd64.whl
+fn wheel_matches_python(filename: &str, py_tag: &str) -> bool {
+    let lower = filename.to_lowercase();
+    let tag = py_tag.to_lowercase();
+    // Match cpXYY tag or "py3" (pure python) or "py2.py3"
+    lower.contains(&tag) || lower.contains("py3-") || lower.contains("py2.py3")
 }
 
 /// Get platform-specific wheel tags for the current OS and architecture.

@@ -323,8 +323,10 @@ impl PypiRegistryClient {
                 Err(_) => continue,
             };
 
-            let ver_str_full = version_str.clone();
-            let entry = version_metadata.entry(ver_str_full.clone()).or_insert_with(|| {
+            // Use the clean version (without +cpu suffix) as the key
+            // so the orchestrator can look it up by PEP 440 version string
+            let ver_key = clean_version.to_string();
+            let entry = version_metadata.entry(ver_key.clone()).or_insert_with(|| {
                 if !versions.contains(&version) {
                     versions.push(version.clone());
                 }
