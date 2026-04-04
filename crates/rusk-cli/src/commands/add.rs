@@ -1,7 +1,10 @@
 //! `rusk add` command.
 //!
 //! Adds a package to the manifest and installs it. Auto-detects the
-//! manifest format (rusk.toml, package.json, pyproject.toml, requirements.txt).
+//! ecosystem from the manifest format:
+//!   - package.json → JS only
+//!   - requirements.txt / pyproject.toml → Python only
+//!   - rusk.toml → reads ecosystem from [package] or --ecosystem flag
 
 use clap::Args;
 use miette::Result;
@@ -23,50 +26,102 @@ pub struct AddArgs {
     pub ecosystem: Option<String>,
 }
 
+/// Detected project ecosystem based on manifest files.
+enum DetectedEcosystem {
+    Js,
+    Python,
+    Mixed(String), // rusk.toml with explicit ecosystem
+}
+
 pub async fn run(args: AddArgs) -> Result<()> {
     let project_dir = std::env::current_dir()
         .map_err(|e| miette::miette!("failed to get current directory: {}", e))?;
 
-    // Detect which manifest file exists
     let rusk_toml = project_dir.join("rusk.toml");
     let package_json = project_dir.join("package.json");
     let pyproject_toml = project_dir.join("pyproject.toml");
     let requirements_txt = project_dir.join("requirements.txt");
 
-    if rusk_toml.exists() {
-        add_to_rusk_toml(&rusk_toml, &args)?;
+    // Step 1: Detect ecosystem from existing manifest
+    let detected = if rusk_toml.exists() {
+        // Read ecosystem from rusk.toml
+        let content = std::fs::read_to_string(&rusk_toml)
+            .map_err(|e| miette::miette!("failed to read rusk.toml: {}", e))?;
+        let doc: toml::Value = toml::from_str(&content)
+            .map_err(|e| miette::miette!("failed to parse rusk.toml: {}", e))?;
+        let eco = doc.get("package")
+            .and_then(|p| p.get("ecosystem"))
+            .and_then(|e| e.as_str())
+            .unwrap_or("js")
+            .to_string();
+        Some(DetectedEcosystem::Mixed(eco))
     } else if package_json.exists() {
-        add_to_package_json(&package_json, &args)?;
-    } else if pyproject_toml.exists() {
-        add_to_pyproject_toml(&pyproject_toml, &args)?;
-    } else if requirements_txt.exists() {
-        add_to_requirements_txt(&requirements_txt, &args)?;
+        Some(DetectedEcosystem::Js)
+    } else if pyproject_toml.exists() || requirements_txt.exists() {
+        Some(DetectedEcosystem::Python)
     } else {
-        // No manifest exists — create based on ecosystem
-        let eco = args.ecosystem.as_deref().unwrap_or("js");
-        match eco {
-            "js" => {
-                let content = format!(
-                    r#"{{"name":"project","version":"0.1.0","dependencies":{{}}}}"#
-                );
-                std::fs::write(&package_json, &content)
+        None // No manifest — need --ecosystem
+    };
+
+    // Step 2: Determine target ecosystem
+    let target_eco = if let Some(ref eco) = args.ecosystem {
+        eco.clone()
+    } else {
+        match &detected {
+            Some(DetectedEcosystem::Js) => "js".to_string(),
+            Some(DetectedEcosystem::Python) => "python".to_string(),
+            Some(DetectedEcosystem::Mixed(eco)) => eco.clone(),
+            None => {
+                return Err(miette::miette!(
+                    "No manifest found. Use --ecosystem js or --ecosystem python to specify."
+                ));
+            }
+        }
+    };
+
+    // Step 3: Validate packages match ecosystem
+    for pkg in &args.packages {
+        let (name, version) = parse_package_spec(pkg);
+        validate_package_for_ecosystem(&name, &version, &target_eco)?;
+    }
+
+    // Step 4: Add to the correct manifest
+    match target_eco.as_str() {
+        "js" => {
+            if rusk_toml.exists() {
+                add_to_rusk_toml(&rusk_toml, &args, "js")?;
+            } else if package_json.exists() {
+                add_to_package_json(&package_json, &args)?;
+            } else {
+                // Create package.json
+                let content = r#"{"name":"project","version":"0.1.0","dependencies":{}}"#;
+                std::fs::write(&package_json, content)
                     .map_err(|e| miette::miette!("failed to create package.json: {}", e))?;
                 crate::output::print_info("Created package.json");
                 add_to_package_json(&package_json, &args)?;
             }
-            "python" | "py" => {
+        }
+        "python" | "py" => {
+            if rusk_toml.exists() {
+                add_to_rusk_toml(&rusk_toml, &args, "python")?;
+            } else if pyproject_toml.exists() {
+                add_to_pyproject_toml(&pyproject_toml, &args)?;
+            } else if requirements_txt.exists() {
+                add_to_requirements_txt(&requirements_txt, &args)?;
+            } else {
+                // Create requirements.txt
                 std::fs::write(&requirements_txt, "")
                     .map_err(|e| miette::miette!("failed to create requirements.txt: {}", e))?;
                 crate::output::print_info("Created requirements.txt");
                 add_to_requirements_txt(&requirements_txt, &args)?;
             }
-            other => {
-                return Err(miette::miette!("unknown ecosystem: {}", other));
-            }
+        }
+        other => {
+            return Err(miette::miette!("unknown ecosystem: {other}"));
         }
     }
 
-    // Now run install
+    // Step 5: Install
     crate::output::print_info("Installing...");
     let install_args = super::install::InstallArgs {
         production: false,
@@ -77,25 +132,47 @@ pub async fn run(args: AddArgs) -> Result<()> {
     super::install::run(install_args, crate::output::OutputFormat::Text).await
 }
 
-fn add_to_rusk_toml(path: &PathBuf, args: &AddArgs) -> Result<()> {
+/// Validate that a package spec makes sense for the target ecosystem.
+fn validate_package_for_ecosystem(name: &str, version: &str, ecosystem: &str) -> Result<()> {
+    match ecosystem {
+        "js" => {
+            // Python-style version specs in a JS project = likely mistake
+            if version.starts_with(">=") || version.starts_with("==") || version.starts_with("~=") {
+                crate::output::print_warning(&format!(
+                    "'{name}{version}' looks like a Python package spec. Did you mean --ecosystem python?"
+                ));
+            }
+        }
+        "python" | "py" => {
+            // npm-style @ version in a Python project = likely mistake
+            if version.starts_with('^') || version.starts_with('~') {
+                // ^ and ~ are npm semver ranges, not PEP 440
+                crate::output::print_warning(&format!(
+                    "'{name}@{version}' looks like an npm package spec. Did you mean --ecosystem js?"
+                ));
+            }
+            // Scoped npm packages in Python = definitely wrong
+            if name.starts_with('@') {
+                return Err(miette::miette!(
+                    "'{name}' is a scoped npm package. Use --ecosystem js for JavaScript packages."
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_to_rusk_toml(path: &PathBuf, args: &AddArgs, eco: &str) -> Result<()> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| miette::miette!("failed to read rusk.toml: {}", e))?;
 
     let mut doc: toml::Value = toml::from_str(&content)
         .map_err(|e| miette::miette!("failed to parse rusk.toml: {}", e))?;
 
-    // Detect ecosystem from manifest
-    let ecosystem = doc.get("package")
-        .and_then(|p| p.get("ecosystem"))
-        .and_then(|e| e.as_str())
-        .unwrap_or("js")
-        .to_string();
-
-    let eco = args.ecosystem.as_deref().unwrap_or(&ecosystem);
-
     for pkg_spec in &args.packages {
         let (name, version) = parse_package_spec(pkg_spec);
-        crate::output::print_info(&format!("Adding {name}@{version}"));
+        crate::output::print_info(&format!("Adding {name} ({eco})"));
 
         match eco {
             "js" => {
@@ -234,8 +311,9 @@ fn parse_package_spec(spec: &str) -> (String, String) {
         }
         // Scoped package like @scope/name@version
         if name.starts_with('@') {
-            if let Some((full_name, ver)) = spec[1..].split_once('@') {
-                return (format!("@{full_name}"), ver.to_string());
+            if let Some((_full_name, ver)) = spec[1..].split_once('@') {
+                let scope_end = spec[1..].find('@').unwrap() + 1;
+                return (spec[..scope_end].to_string(), ver.to_string());
             }
         }
     }
@@ -283,5 +361,11 @@ mod tests {
         let (n, v) = parse_package_spec("six==1.16.0");
         assert_eq!(n, "six");
         assert_eq!(v, "==1.16.0");
+    }
+
+    #[test]
+    fn validate_scoped_npm_in_python_rejected() {
+        let result = validate_package_for_ecosystem("@scope/pkg", "^1.0", "python");
+        assert!(result.is_err());
     }
 }
