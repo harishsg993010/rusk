@@ -102,30 +102,30 @@ tar = "0.4"
 zip = "2"
 
 # Internal crates
-rusk-core = { path = "crates/rusk-core" }
-rusk-manifest = { path = "crates/rusk-manifest" }
-rusk-lockfile = { path = "crates/rusk-lockfile" }
-rusk-cas = { path = "crates/rusk-cas" }
-rusk-transport = { path = "crates/rusk-transport" }
-rusk-tuf = { path = "crates/rusk-tuf" }
-rusk-signing = { path = "crates/rusk-signing" }
-rusk-transparency = { path = "crates/rusk-transparency" }
-rusk-provenance = { path = "crates/rusk-provenance" }
-rusk-policy = { path = "crates/rusk-policy" }
-rusk-revocation = { path = "crates/rusk-revocation" }
-rusk-registry = { path = "crates/rusk-registry" }
-rusk-registry-npm = { path = "crates/rusk-registry-npm" }
-rusk-registry-pypi = { path = "crates/rusk-registry-pypi" }
-rusk-resolver = { path = "crates/rusk-resolver" }
-rusk-resolver-js = { path = "crates/rusk-resolver-js" }
-rusk-resolver-python = { path = "crates/rusk-resolver-python" }
-rusk-materialize = { path = "crates/rusk-materialize" }
-rusk-materialize-js = { path = "crates/rusk-materialize-js" }
-rusk-materialize-python = { path = "crates/rusk-materialize-python" }
-rusk-sandbox = { path = "crates/rusk-sandbox" }
-rusk-orchestrator = { path = "crates/rusk-orchestrator" }
-rusk-observability = { path = "crates/rusk-observability" }
-rusk-enterprise = { path = "crates/rusk-enterprise" }
+rusk-core = { path = "crates/rusk-core", version = "0.1.0" }
+rusk-manifest = { path = "crates/rusk-manifest", version = "0.1.0" }
+rusk-lockfile = { path = "crates/rusk-lockfile", version = "0.1.0" }
+rusk-cas = { path = "crates/rusk-cas", version = "0.1.0" }
+rusk-transport = { path = "crates/rusk-transport", version = "0.1.0" }
+rusk-tuf = { path = "crates/rusk-tuf", version = "0.1.0" }
+rusk-signing = { path = "crates/rusk-signing", version = "0.1.0" }
+rusk-transparency = { path = "crates/rusk-transparency", version = "0.1.0" }
+rusk-provenance = { path = "crates/rusk-provenance", version = "0.1.0" }
+rusk-policy = { path = "crates/rusk-policy", version = "0.1.0" }
+rusk-revocation = { path = "crates/rusk-revocation", version = "0.1.0" }
+rusk-registry = { path = "crates/rusk-registry", version = "0.1.0" }
+rusk-registry-npm = { path = "crates/rusk-registry-npm", version = "0.1.0" }
+rusk-registry-pypi = { path = "crates/rusk-registry-pypi", version = "0.1.0" }
+rusk-resolver = { path = "crates/rusk-resolver", version = "0.1.0" }
+rusk-resolver-js = { path = "crates/rusk-resolver-js", version = "0.1.0" }
+rusk-resolver-python = { path = "crates/rusk-resolver-python", version = "0.1.0" }
+rusk-materialize = { path = "crates/rusk-materialize", version = "0.1.0" }
+rusk-materialize-js = { path = "crates/rusk-materialize-js", version = "0.1.0" }
+rusk-materialize-python = { path = "crates/rusk-materialize-python", version = "0.1.0" }
+rusk-sandbox = { path = "crates/rusk-sandbox", version = "0.1.0" }
+rusk-orchestrator = { path = "crates/rusk-orchestrator", version = "0.1.0" }
+rusk-observability = { path = "crates/rusk-observability", version = "0.1.0" }
+rusk-enterprise = { path = "crates/rusk-enterprise", version = "0.1.0" }
 
 [dev-dependencies]
 rusk-core = { workspace = true }
