@@ -64,6 +64,20 @@ pub enum Commands {
     Config(commands::config::ConfigArgs),
     /// Add a package to the manifest and install it.
     Add(commands::add::AddArgs),
+    /// Remove packages from the manifest and uninstall them.
+    Remove(commands::remove::RemoveArgs),
+    /// Display the dependency tree from the lockfile.
+    Tree(commands::tree::TreeArgs),
+    /// Run a command with the correct ecosystem environment.
+    Run(commands::run::RunArgs),
+    /// Resolve dependencies and write rusk.lock without installing.
+    Lock(commands::lock::LockArgs),
+    /// Install from lockfile and remove extraneous packages.
+    Sync(commands::sync::SyncArgs),
+    /// Create a Python virtual environment.
+    Venv(commands::venv::VenvArgs),
+    /// List installed packages with versions.
+    List(commands::list::ListArgs),
 }
 
 #[tokio::main]
@@ -118,6 +132,13 @@ async fn main() {
         Commands::Init(args) => commands::init::run(args).await,
         Commands::Config(args) => commands::config::run(args).await,
         Commands::Add(args) => commands::add::run(args).await,
+        Commands::Remove(args) => commands::remove::run(args).await,
+        Commands::Tree(args) => commands::tree::run(args).await,
+        Commands::Run(args) => commands::run::run(args).await,
+        Commands::Lock(args) => commands::lock::run(args, fmt).await,
+        Commands::Sync(args) => commands::sync::run(args, fmt).await,
+        Commands::Venv(args) => commands::venv::run(args).await,
+        Commands::List(args) => commands::list::run(args, fmt).await,
     };
 
     match result {
