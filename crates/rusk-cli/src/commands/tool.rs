@@ -10,6 +10,7 @@
 
 use clap::{Args, Subcommand};
 use miette::Result;
+use serde_json;
 use std::path::PathBuf;
 
 /// Arguments for the tool command group.
@@ -200,8 +201,120 @@ async fn ensure_tool_venv(tool_dir: &PathBuf, package: &str) -> Result<PathBuf> 
 // Subcommand implementations
 // ---------------------------------------------------------------------------
 
-/// Run a tool in an isolated venv (cached for reuse).
-async fn run_tool(package: &str, args: &[String]) -> Result<()> {
+/// Detect if a package is a JS/npm package or Python package.
+/// Heuristic: known JS tools, or if name contains @scope/, it's npm.
+fn is_js_tool(package: &str) -> bool {
+    // Scoped npm packages
+    if package.starts_with('@') {
+        return true;
+    }
+    // Well-known JS tools
+    const JS_TOOLS: &[&str] = &[
+        "eslint", "prettier", "typescript", "tsc", "tsx", "vite",
+        "webpack", "rollup", "esbuild", "swc", "turbo", "next",
+        "create-react-app", "create-next-app", "serve", "http-server",
+        "nodemon", "pm2", "jest", "vitest", "mocha", "nyc",
+        "tailwindcss", "postcss", "sass", "less", "ts-node",
+        "concurrently", "cross-env", "rimraf", "mkdirp",
+        "degit", "tiged", "npkill", "npm-check-updates",
+    ];
+    JS_TOOLS.contains(&package)
+}
+
+/// Run a JS tool via npx-style: install to cached node_modules, run binary.
+async fn run_js_tool(package: &str, args: &[String]) -> Result<()> {
+    let tool_dir = tools_base_dir()?.join(format!("js-{}", package));
+    let node_modules = tool_dir.join("node_modules");
+
+    // Install if not cached
+    if !node_modules.join(package).exists() {
+        std::fs::create_dir_all(&tool_dir)
+            .map_err(|e| miette::miette!("failed to create tool dir: {}", e))?;
+
+        let spinner = crate::output::create_spinner(&format!("Installing JS tool '{}'...", package));
+
+        // Use rusk itself to install
+        let pkg_json = tool_dir.join("package.json");
+        let content = format!(r#"{{"name":"rusk-tool-{}","private":true,"dependencies":{{"{}":"latest"}}}}"#, package, package);
+        std::fs::write(&pkg_json, content)
+            .map_err(|e| miette::miette!("failed to write package.json: {}", e))?;
+
+        // Run npm install via our own orchestrator
+        let config = rusk_orchestrator::config::OrchestratorConfig::for_project(tool_dir.clone());
+        let result = rusk_orchestrator::run_install(&config, None).await;
+
+        spinner.finish_and_clear();
+
+        if let Err(e) = result {
+            return Err(miette::miette!("failed to install JS tool '{}': {}", package, e));
+        }
+    }
+
+    // Find the binary in node_modules/.bin/
+    let bin_dir = node_modules.join(".bin");
+    let tool_exe = if cfg!(windows) {
+        let cmd = bin_dir.join(format!("{}.cmd", package));
+        if cmd.exists() { cmd }
+        else { bin_dir.join(format!("{}.exe", package)) }
+    } else {
+        bin_dir.join(package)
+    };
+
+    // Fallback: check package's bin field
+    let tool_exe = if !tool_exe.exists() {
+        // Read package.json bin field
+        let pkg_json = node_modules.join(package).join("package.json");
+        if pkg_json.exists() {
+            let content = std::fs::read_to_string(&pkg_json).unwrap_or_default();
+            if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(bin) = doc.get("bin") {
+                    let bin_path = match bin {
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        serde_json::Value::Object(m) => m.get(package).and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        _ => None,
+                    };
+                    if let Some(bp) = bin_path {
+                        let full = node_modules.join(package).join(bp);
+                        if full.exists() {
+                            full
+                        } else {
+                            tool_exe
+                        }
+                    } else { tool_exe }
+                } else { tool_exe }
+            } else { tool_exe }
+        } else { tool_exe }
+    } else { tool_exe };
+
+    if !tool_exe.exists() {
+        return Err(miette::miette!(
+            "JS tool binary '{}' not found. The package may not provide a CLI entry point.",
+            package
+        ));
+    }
+
+    // Run with node if it's a .js/.cjs/.mjs file, direct if .cmd/.exe
+    let ext = tool_exe.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let status = if ext == "js" || ext == "mjs" || ext == "cjs" {
+        tokio::process::Command::new("node")
+            .arg(&tool_exe)
+            .args(args)
+            .env("NODE_PATH", node_modules.to_string_lossy().as_ref())
+            .status()
+            .await
+    } else {
+        tokio::process::Command::new(&tool_exe)
+            .args(args)
+            .status()
+            .await
+    };
+
+    let status = status.map_err(|e| miette::miette!("failed to execute '{}': {}", package, e))?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Run a Python tool in an isolated venv (cached for reuse).
+async fn run_py_tool(package: &str, args: &[String]) -> Result<()> {
     let tool_dir = tools_base_dir()?.join(package);
     let venv_dir = ensure_tool_venv(&tool_dir, package).await?;
 
@@ -211,12 +324,10 @@ async fn run_tool(package: &str, args: &[String]) -> Result<()> {
         if exe.exists() {
             exe
         } else {
-            // Some packages install scripts without .exe extension on Windows
             let script = bin_dir.join(package);
             if script.exists() {
                 script
             } else {
-                // Try with .cmd extension
                 bin_dir.join(format!("{}.cmd", package))
             }
         }
@@ -240,6 +351,17 @@ async fn run_tool(package: &str, args: &[String]) -> Result<()> {
         .map_err(|e| miette::miette!("failed to execute '{}': {}", tool_exe.display(), e))?;
 
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// Run a tool — auto-detects JS vs Python.
+async fn run_tool(package: &str, args: &[String]) -> Result<()> {
+    if is_js_tool(package) {
+        run_js_tool(package, args).await
+    } else {
+        // Default to Python (like uvx)
+        // But if Python tool fails, suggest --ecosystem js
+        run_py_tool(package, args).await
+    }
 }
 
 /// Persistently install a tool and link its binary.
