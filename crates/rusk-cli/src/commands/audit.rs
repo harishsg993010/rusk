@@ -289,15 +289,9 @@ pub async fn run(args: AuditArgs, format: crate::output::OutputFormat) -> Result
         .iter()
         .any(|i| matches!(i.severity, "critical" | "high"));
 
-    if args.strict && has_critical_high {
-        return Err(miette::miette!(
-            "audit found critical/high issues ({} total)",
-            issues.len()
-        ));
-    }
     if args.strict && !issues.is_empty() {
-        crate::output::print_warning(&format!(
-            "audit found {} issues (none critical/high)",
+        return Err(miette::miette!(
+            "audit found {} issues",
             issues.len()
         ));
     }
