@@ -253,15 +253,31 @@ Full evaluation trace:
 |---------|-------------|
 | `rusk install` | Resolve, download, verify, and install packages |
 | `rusk add <pkg>` | Add a package to the manifest and install it |
-| `rusk init` | Create a new project with `rusk.toml` |
-| `rusk verify` | Check installed packages match lockfile digests |
-| `rusk audit` | Evaluate trust policy across all dependencies |
-| `rusk explain <pkg>` | Show why a package was allowed or blocked |
+| `rusk remove <pkg>` | Remove a package from manifest, lockfile, and disk |
 | `rusk update` | Re-resolve and update the lockfile |
+| `rusk lock` | Resolve and write lockfile without installing |
+| `rusk sync` | Install from lockfile and remove extraneous packages |
+| `rusk run <cmd>` | Run a command with ecosystem env vars (NODE_PATH/PYTHONPATH) |
+| `rusk list` | List installed packages with versions |
+| `rusk tree` | Display the dependency tree |
+| `rusk verify` | Check installed packages match lockfile digests |
+| `rusk audit` | Evaluate trust policy + check security advisories |
+| `rusk explain <pkg>` | Show why a package was allowed or blocked |
+| `rusk init` | Create a new project with `rusk.toml` |
+| `rusk migrate` | Import from package-lock.json / yarn.lock / pnpm-lock.yaml |
+| `rusk patch <pkg>` | Copy a package for editing, then commit as a patch |
+| `rusk link` | Register or consume local package symlinks |
+| `rusk venv` | Create a Python virtual environment |
 | `rusk gc` | Clean up unreferenced blobs from the cache |
 | `rusk config` | View or modify rusk configuration |
 | `rusk build` | Run build scripts in a sandbox |
 | `rusk publish` | Validate and publish a package |
+| `rusk python list` | Discover Python installations on PATH |
+| `rusk python find` | Find a Python matching a version |
+| `rusk python pin` | Write `.python-version` file |
+| `rusk tool run` | Run a Python CLI tool in an isolated venv |
+| `rusk tool install` | Persistently install a CLI tool |
+| `rusk x <pkg>` | Shorthand for `rusk tool run` (like uvx) |
 
 ## CI integration
 
@@ -498,6 +514,16 @@ rusk stores provenance metadata in the lockfile. On update, it compares old vs n
 | Revocation epoch tracking | Yes | No | No | No | No |
 | Build script sandbox | Yes | No | No | No | No |
 | Auto-detect package.json/requirements.txt | Yes | N/A | N/A | N/A | N/A |
+| Security advisory scanner | Yes | `npm audit` | No | No | No |
+| Lockfile migration (npm/yarn/pnpm) | Yes | N/A | N/A | N/A | N/A |
+| Git dependencies | Yes | Yes | Yes | N/A | N/A |
+| Optional dependencies (skip on fail) | Yes | Yes | Yes | N/A | N/A |
+| .npmrc auth token support | Yes | Yes | Yes | N/A | N/A |
+| Package patching | Yes | No | Yes | N/A | N/A |
+| Local package linking | Yes | Yes | Yes | N/A | N/A |
+| Version overrides | Yes | Yes | Yes | N/A | N/A |
+| Isolated node_modules (pnpm-style) | Yes | No | Yes | N/A | N/A |
+| Python tool runner (like uvx) | Yes | N/A | N/A | No | Yes |
 | Structured CI exit codes | Yes (13 codes) | No | No | No | No |
 | JSON output for all commands | Yes | No | No | No | No |
 | Anomaly reporting webhook | Yes | No | No | No | No |
@@ -506,7 +532,7 @@ rusk stores provenance metadata in the lockfile. On update, it compares old vs n
 
 ## Testing
 
-377 tests across the workspace, including 66 adversarial security tests that simulate real supply-chain attacks:
+385 unit/integration tests, 33 PowerShell failure scenario tests, and 40 end-to-end command tests. Includes 66 adversarial security tests that simulate real supply-chain attacks:
 
 - CAS corruption detection
 - Lockfile digest tampering
@@ -539,28 +565,46 @@ Requires Rust 1.75 or later. The release binary is about 8MB.
 
 rusk is a working package manager. You can use it today to install JavaScript and Python packages with stronger security guarantees than any mainstream alternative.
 
-What's working end-to-end:
+26 commands covering the full package lifecycle:
+
+**Package management**: install, add, remove, update, lock, sync, run, list, tree, migrate, patch, link
+**Security**: verify, audit (with advisory scanning), explain, build (sandboxed)
+**Python tools**: venv, python list/find/pin, tool run/install (rusk x)
+**Infrastructure**: init, gc, config, publish, --format json, --exit-codes
+
+Feature-complete for both ecosystems:
 - Full transitive dependency resolution for JS (npm) and Python (PyPI)
-- Auto-detection of package.json, requirements.txt, pyproject.toml
-- `rusk add` command for adding packages to any manifest format
+- Auto-detection of package.json, requirements.txt, pyproject.toml, rusk.toml
+- Ecosystem-aware `rusk add` — JS packages go to JS, Python to Python
 - Parallel metadata fetching across dependency tree levels
 - Content-addressed storage with verify-on-read integrity checking
 - Lockfile-first installs with three-tier caching (no-op / warm / cold)
 - Extracted package cache with hardlinks for near-instant reinstalls
+- Platform-aware wheel selection (Python version + OS + arch)
+- Custom index URLs (PyTorch CPU from download.pytorch.org)
+- Git dependencies (git+https://, github:user/repo)
+- Optional dependencies (warn-and-skip on failure)
+- Version overrides for transitive dependencies
+- Isolated (pnpm-style) node_modules layout option
+- Package patching and local symlink development
+- Lockfile migration from npm, yarn, and pnpm
+- .npmrc auth token support with env var expansion
+
+Security on every install:
+- SHA-256 digest verification on every artifact
 - npm ECDSA signature verification against live registry keys
 - PyPI PEP 740 attestation verification via Integrity API
 - Provenance change detection on update (catches litellm-style attacks)
+- Security advisory scanning against npm vulnerability database
 - Policy engine with audit, verify, and explain commands
 - Revocation checking with epoch-based cache invalidation
-- Build sandbox (process and container backends) for `rusk build`
-- Structured exit codes (13 distinct codes) for CI pipelines
-- JSON output (`--format json`) for install, verify, audit
-- Anomaly reporting webhook (fire-and-forget POST on security events)
-- `cargo rusk` subcommand support
-- Out-of-band release binary signing with minisign
-- 377 passing tests including 66 adversarial security tests
+- Build sandbox with env scrubbing (process and container backends)
+- Anomaly reporting webhook for Slack/PagerDuty/Datadog
+- Structured CI exit codes (13 distinct codes)
+- JSON output for all commands
+- Out-of-band release binary signing
 
-Tested against real production frameworks: Express (70 deps), Fastify (46 deps), Flask (15 deps), litellm (60+ deps), and mixed JS+Python monorepos.
+Tested against real production frameworks: Express (70 deps), Fastify (46 deps), Flask (15 deps), litellm (60+ deps), PyTorch (22 deps from custom index), and mixed JS+Python monorepos. 40/40 end-to-end command tests passing.
 
 Everything listed above runs on every `rusk install`. Use `-v` to see the full security pipeline in action.
 
